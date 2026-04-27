@@ -1,0 +1,31 @@
+# 忽略 results 目录
+results/
+
+# Python 相关
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+
+# 数据和模型文件（根据需要添加）
+*.pth
+*.pkl
+*.h5
+
+# 日志文件
+*.log
+
+# 临时文件
+*.tmp
+*.bak
+*~
