@@ -1,0 +1,42 @@
+{
+    "algorithm": "MedAGDiffusion",
+    "data_config": {
+        "num_transform_method": "quantile",
+        "inject_physics_prior": false,
+        "random_state": 42
+    },
+    "model_config": {
+        "dim_t": 128,
+        "dim_hidden": 512,
+        "num_layers": 3,
+        "dropout": 0.1,
+        "num_timesteps": 200,
+        "use_adaptive_focal": false,
+        "gma_loss_weight": 0.0,
+        "corr_weight": 0.0,
+        "corr_t_ratio": 0.2,
+        "null_class_idx": 2,
+        "posterior_switch_ratio": 1.0,
+        "cat_temperature_cap": 1.0,
+        "x0_clamp_min": -5.0,
+        "x0_clamp_max": 5.0
+    },
+    "train_config": {
+        "batch_size": 512,
+        "epochs": 800,
+        "lr": 0.0001,
+        "uncond_p": 0.0,
+        "patience": 25,
+        "task": "full_data",
+        "objective": "fidelity"
+    },
+    "sampling_config": {
+        "num_samples": 3392,
+        "cfg_scale_fedility": 1.0,
+        "cfg_scale_boost": 3.0,
+        "temperature_fedility": 1.0,
+        "temperature_boost": 0.7,
+        "repulse_weight_fedility": 0.0,
+        "repulse_weight_boost": 1.0
+    }
+}
