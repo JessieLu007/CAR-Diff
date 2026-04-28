@@ -37,7 +37,7 @@ class  MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         self.target_dist_info = {}
         
         # 初始化扩散 Schedule Buffers
-        self._init_diffusion_buffers(self.num_timesteps)
+        self._init_diffusion_buffers(self.num_timesteps) 
 
     def _setup_training_for_task(self, df_train, target_col, cat_cols, data_config):
         """

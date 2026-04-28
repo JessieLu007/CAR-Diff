@@ -43,6 +43,25 @@ class TabMLPDenoise(nn.Module):
         self.num_classes = info['num_classes']
         self.in_dim = self.num_numerical + sum(self.num_classes)
 
+        # revised: 新增对应模块，分类和数值属性区别处理
+        self.proj_num = nn.Sequential(
+            nn.Linear(self.num_numerical, dim_hidden // 2),
+            nn.SiLU(),
+            nn.LayerNorm(dim_hidden // 2)
+        )
+
+        self.proj_cat = nn.Sequential(
+            nn.Linear(sum(self.num_classes), dim_hidden // 2),
+            nn.SiLU(),
+            nn.LayerNorm(dim_hidden // 2)
+        )
+
+        self.proj_fuse = nn.Sequential(
+            nn.Linear(dim_hidden + dim_t, dim_hidden),
+            nn.SiLU(),
+            nn.LayerNorm(dim_hidden)
+        )
+
         # 1. 时间嵌入
         self.time_embed = nn.Sequential(
             nn.Linear(dim_t, dim_t),
@@ -85,8 +104,20 @@ class TabMLPDenoise(nn.Module):
 
         # --- 2. 特征融合 ---
         # 直接把特征和嵌入拼接起来送进 MLP
-        h = torch.cat([x_in, emb], dim=-1)
-        h = self.proj_in(h)
+        # 修订:
+        revised = False
+        if revised:
+            x_num = x_in[:, :self.num_numerical]
+            x_cat = x_in[:, self.num_numerical:]
+
+            h_num = self.proj_num(x_num)
+            h_cat = self.proj_cat(x_cat)
+
+            h = torch.cat([h_num, h_cat, emb], dim=-1)
+            h = self.proj_fuse(h)
+        else:
+            h = torch.cat([x_in, emb], dim=-1)
+            h = self.proj_in(h)
 
         # --- 3. 前向传播 ---
         for layer in self.layers:
