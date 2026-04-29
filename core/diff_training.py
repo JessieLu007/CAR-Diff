@@ -4,19 +4,24 @@ def train_loop(model, dataloader, train_cfg):
     #optimizer = torch.optim.AdamW(model._denoise_fn.parameters(), lr=train_cfg.lr, weight_decay=1e-4)
 
     den = model._denoise_fn
+
     optimizer = torch.optim.AdamW(
         [
             {'params': den.time_embed.parameters(),  'lr': train_cfg.lr},
             {'params': den.label_emb.parameters(),   'lr': train_cfg.lr},
-            {'params': den.proj_in.parameters(),     'lr': train_cfg.lr},
+            # input projection
+            {'params': den.proj_num.parameters(), 'lr': train_cfg.lr},
+            {'params': den.proj_cat.parameters(), 'lr': train_cfg.lr},
+            {'params': den.proj_fuse.parameters(), 'lr': train_cfg.lr},
+            # backbone
             {'params': den.layers.parameters(),      'lr': train_cfg.lr},
+            # output
             {'params': den.out_num.parameters(),     'lr': train_cfg.lr},
-            # 分类头：lr 稍大
-            {'params': den.out_cat.parameters(),     'lr': train_cfg.lr * 2.0},
+            {'params': den.out_cat.parameters(),     'lr': train_cfg.lr * 1.0},
         ],
         weight_decay=1e-4,
     )
-
+    
     best_loss = float('inf')
     patience_counter = 0
 
