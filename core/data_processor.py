@@ -28,37 +28,6 @@ class TabularDataProcessor:
         )
 
     # =========================================================
-    # 统一数值结构检测
-    # =========================================================
-    def _analyze_numeric_structure(self, values, tolerance=1e-9):
-        values = pd.Series(values).dropna().values
-        unique = np.sort(np.unique(values))
-
-        result = {
-            'step': None,
-            'valid_set': unique,
-            'decimal_pattern': None
-        }
-
-        if len(unique) <= 1:
-            return result
-
-        # ---------- 1. 检测等间距 ----------
-        diffs = np.diff(unique)
-        if np.all(np.abs(diffs - diffs[0]) < tolerance):
-            result['step'] = diffs[0]
-
-        # ---------- 2. 检测小数模式 ----------
-        frac = np.abs(unique - np.round(unique))
-        frac = np.round(frac, 3)
-        unique_frac = np.unique(frac)
-
-        if len(unique_frac) <= 3:
-            result['decimal_pattern'] = unique_frac.tolist()
-
-        return result
-
-    # =========================================================
     def fit(self, df: pd.DataFrame):
         self.original_columns = df.columns.tolist()
         df_temp = pd.DataFrame(index=df.index)
@@ -82,7 +51,7 @@ class TabularDataProcessor:
             )
 
         # =========================
-        # 2. 数值特征（结构+精度）
+        # 2. 数值特征（精度）
         # =========================
         for col in self.num_cols:
             series = df[col]
@@ -90,23 +59,12 @@ class TabularDataProcessor:
 
             is_int = np.allclose(valid_data, np.round(valid_data), equal_nan=True)
 
-            # ---------- 结构分析 ----------
-            structure = self._analyze_numeric_structure(valid_data)
-            step = structure['step']
-            valid_set = structure['valid_set']
-            decimal_pattern = structure['decimal_pattern']
-
             # ---------- 精度 ----------
-            if step is not None:
-                step_str = f"{step:.10f}".rstrip('0').rstrip('.')
-                prec = len(step_str.split('.')[1]) if '.' in step_str else 0
-            else:
-                sample = valid_data.sample(min(1000, len(valid_data)))
-                decimals = sample.astype(str).apply(
-                    lambda x: len(x.split('.')[1]) if '.' in x else 0
-                )
-                prec = int(decimals.mode()[0])
-
+            sample = valid_data.sample(min(1000, len(valid_data)))
+            decimals = sample.astype(str).apply(
+                lambda x: len(x.split('.')[1]) if '.' in x else 0
+            )
+            prec = int(decimals.mode()[0])
             self.precisions[col] = prec
 
             # ---------- 编码器 ----------
@@ -127,9 +85,6 @@ class TabularDataProcessor:
                 'min': valid_data.min(),
                 'max': valid_data.max(),
                 'encoder': encoder,
-                'precision_step': step,
-                'precision_valid_set': valid_set,
-                'decimal_pattern': decimal_pattern
             }
 
             df_temp[col] = series
@@ -210,34 +165,7 @@ class TabularDataProcessor:
             inversed = meta['encoder'].inverse_transform(vals).flatten()
 
             # ---------- 边界 ----------
-            inversed = np.clip(inversed, meta['min'], meta['max'])
-
-            step = meta['precision_step']
-            valid_set = meta['precision_valid_set']
-            pattern = meta['decimal_pattern']
-
-            # ---------- step ----------
-            if step is not None and step > 0:
-                inversed = np.round(inversed / step) * step
-                inversed = np.round(inversed, 6)
-
-            # ---------- valid set ----------
-            elif valid_set is not None and len(valid_set) > 0:
-                valid_arr = np.asarray(valid_set)
-                inversed = np.array([
-                    valid_arr[np.argmin(np.abs(valid_arr - v))]
-                    for v in inversed
-                ])
-
-            # ---------- decimal pattern ----------
-            if pattern is not None:
-                base = np.floor(inversed)
-                frac = inversed - base
-                frac_new = np.array([
-                    min(pattern, key=lambda p: abs(f - p))
-                    for f in frac
-                ])
-                inversed = base + frac_new
+            inversed = np.clip(inversed, meta['min'], meta['max'])            
 
             # ---------- 精度 ----------
             prec = self.precisions.get(col, 2)

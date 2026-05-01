@@ -48,7 +48,7 @@ class TabMLPDenoise(nn.Module):
         info,
         num_classes_cond=2,
         dim_t=128,
-        dim_hidden=256,
+        dim_hidden=256, # 这里的dim_hidden建议作为每个特征embedding的维度
         num_layers=3,
         dropout=0.1
     ):
@@ -56,7 +56,7 @@ class TabMLPDenoise(nn.Module):
 
         self.dim_t = dim_t
         self.num_numerical = info['num_numerical']
-        self.num_classes = info['num_classes']
+        self.num_classes = info['num_classes'] #list [2, 4, 5]
 
         total_cat_dim = sum(self.num_classes)
 
