@@ -119,10 +119,10 @@ class TabularEvaluator:
         X_real_s = valid_real.sample(n_real, random_state = self.random_state) # short for x real sample
         X_fake_s = valid_fake.sample(n_fake, random_state = self.random_state)
 
-        real_num = X_real_s[self.num_cols].values
-        fake_num = X_fake_s[self.num_cols].values
-        real_cat = X_real_s[self.cat_cols].values
-        fake_cat = X_fake_s[self.cat_cols].values
+        real_num = X_real_s[self.num_cols].values.astype(float)
+        fake_num = X_fake_s[self.num_cols].values.astype(float)
+        real_cat = X_real_s[self.cat_cols].values.astype(float)
+        fake_cat = X_fake_s[self.cat_cols].values.astype(float)
 
         ranges = np.ptp(valid_real[self.num_cols].values, axis=0)
         ranges[ranges == 0] = 1e-5
@@ -152,7 +152,7 @@ class TabularEvaluator:
         if mode == 'augmentation':
             X_train = pd.concat([self.X_real_train_proc, self.X_fake_proc], axis=0)
             y_train = pd.concat([self.y_real_train, self.y_fake], axis=0)
-            shuffle_idx = np.random.permuation(len(X_train))
+            shuffle_idx = np.random.permutation(len(X_train))
             X_train = X_train.iloc[shuffle_idx].reset_index(drop=True)
             y_train = y_train.iloc[shuffle_idx]
         elif mode == 'tstr':
@@ -191,6 +191,48 @@ class TabularEvaluator:
     # ---------- 4. 类别占比（单折版本） ----------
     def evaluate_categorical_proportions(self) -> pd.DataFrame:
         """
+        输出各类别特征在真实训练集与合成集中的占比对比。
+        - tstr 模式：真实侧用全量训练集，并额外对比 target_col 分布
+        - augmentation 模式：真实侧只用少数类（label=1）子集，
+          因为生成的是少数类样本，和全量对比没有意义
+        """
+        cols = list(self.cat_cols)
+        if self.ml_mode == 'tstr':
+            cols.append(self.target_col)
+
+        # 确定真实侧的参考子集
+        if self.ml_mode == 'augmentation':
+            # 只取少数类行作为对比基准
+            minority_mask = (self.y_real_train == 1)
+            X_real_ref = self.X_real_train_raw[minority_mask]
+            y_real_ref = self.y_real_train[minority_mask]
+            ref_label = 'Real_Minority(%)'
+        else:
+            X_real_ref = self.X_real_train_raw
+            y_real_ref = self.y_real_train
+            ref_label = 'Real_Train(%)'
+
+        records = []
+        for col in cols:
+            if col == self.target_col:
+                real_prop = y_real_ref.value_counts(normalize=True) * 100
+                fake_prop = self.y_fake.value_counts(normalize=True) * 100
+            else:
+                real_prop = X_real_ref[col].value_counts(normalize=True) * 100
+                fake_prop = self.X_fake_raw[col].value_counts(normalize=True) * 100
+
+            for cat in real_prop.index.union(fake_prop.index):
+                records.append({
+                    'Feature':   col,
+                    'Category':  cat,
+                    ref_label:   round(real_prop.get(cat, 0.0), 2),
+                    'Fake(%)':   round(fake_prop.get(cat, 0.0), 2),
+                })
+
+        return pd.DataFrame(records).set_index(['Feature', 'Category'])
+    '''
+    def evaluate_categorical_proportions(self) -> pd.DataFrame:
+        """
         输出各类别特征在真实训练集与合成集中的占比对比
         :return: 以MultiIndex(feature, category)为索引的DataFrame
         """
@@ -217,6 +259,50 @@ class TabularEvaluator:
                 })
         
         return pd.DataFrame(records).set_index(['Feature', 'Category'])
+    '''
+    # ---------- 5. 打印分类结果 ----------
+    def _print_ml_table(self, ml_results: dict):
+        """
+        打印多模型分类评估对比表
+        results: {
+            'ModelName': {
+                'Base_ROC-AUC': float,
+                'Aug_ROC-AUC': float,
+                'Base_PR-AUC': float,
+                ...
+            }, ...
+        }
+        """
+        metrics = ['ROC-AUC', 'PR-AUC', 'F1', 'Recall']
+        models = list(ml_results.keys())
+        
+        # 表头
+        print("\nML Classification Utility (Baseline vs Augmented)")
+        print("-" * 100)
+        header = f"| {'Model':<12} | {'Metric':<10} | {'Baseline':>12} | {'Augmented':>12} | {'Delta (Aug-Base)':>16} |"
+        print(header)
+        print("-" * 100)
+        
+        for model in models:
+            for i, metric in enumerate(metrics):
+                base_key = f'Base_{metric}'
+                aug_key = f'Aug_{metric}'
+                base_val = ml_results[model].get(base_key, None)
+                aug_val = ml_results[model].get(aug_key, None)
+                if base_val is None or aug_val is None:
+                    continue
+                
+                delta = aug_val - base_val
+                # Delta 用颜色标记（可选，这里不加颜色，仅用符号）
+                delta_str = f"+{delta:.4f}" if delta >= 0 else f"{delta:.4f}"
+                
+                # 第一行显示模型名，后续行留空
+                model_display = model if i == 0 else ""
+                print(f"| {model_display:<12} | {metric:<10} | {base_val:>12.4f} | {aug_val:>12.4f} | {delta_str:>16} |")
+        
+        print("-" * 100)
+        print("注：Delta 为 Augmented - Baseline，正值表示提升\n")
+
 
     # ---------- 完整单折报告 ----------
     def run_full_evaluation(self):
@@ -224,4 +310,5 @@ class TabularEvaluator:
         privacy = self.evaluate_privacy()
         ml_res = self.evaluate_ml_utility()
         cat_proportion = self.evaluate_categorical_proportions() # DataFrame
+        return stats, privacy, ml_res, cat_proportion
         return {**stats, **privacy, 'ml_utility': ml_res, 'categorical_proportions': cat_proportion}

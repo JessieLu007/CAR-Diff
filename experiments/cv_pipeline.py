@@ -10,7 +10,7 @@ from dataclasses import dataclass, asdict
 from sklearn.model_selection import StratifiedKFold
 
 from experiments.base_synthesizer import BaseSynthesizer
-from evaluation.evaluator import CrossValidationEvaluator
+from evaluation.cv_runner import CrossValidationEvaluator
 
 # =====================================================================
 # 1. 交叉验证管线配置类
@@ -139,6 +139,8 @@ def run_single_split_pipeline(
     # 2. 拟合与生成
     print(f"\n>>> 正在拟合模型与生成数据...")
     synthesizer.fit(df_train)
+    synthesizer.save(save_path)
+
 
     global_minority_class = df_all[target_col].value_counts().idxmin()
     df_fake = synthesizer.generate(
@@ -171,11 +173,11 @@ def run_single_split_pipeline(
         stats_agg, ml_agg = evaluator.run()
         evaluator.save_results(stats_agg, ml_agg, save_dir=save_path)
 
-    # 6. 保存配置文件
-    config_dict = synthesizer.get_config_dict()
-    with open(os.path.join(save_path, "config.json"), 'w') as f:
-        json.dump(config_dict, f, indent=4)
-    
+    # 6. 保存配置文件, 又synthesizers.py中的save()统一负责
+    if False:
+        config_dict = synthesizer.get_config_dict()
+        with open(os.path.join(save_path, "config.json"), 'w') as f:
+            json.dump(config_dict, f, indent=4)
         
     print(f"\n✅ 单次实验完成！报告在: {save_path}")
     return fold_results
@@ -184,7 +186,7 @@ def run_single_split_pipeline(
 # ====================================================
 # 新增用于评估训练得到的模型的生成稳定性，即训练1次，生成5次
 # ====================================================
-from evaluation.evaluator import StabilityEvaluator
+from evaluation.tool_stability import StabilityEvaluator
 
 def run_stability_pipeline(
         df_train: pd.DataFrame,

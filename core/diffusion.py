@@ -245,7 +245,13 @@ class  MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         loss_num, loss_corr = compute_numerical_loss(self, x_num, x_num_t, model_out, t, noise)
         loss_cat = compute_categorical_loss(self, x_cat, model_out, use_basic=True)
 
-        total_loss = loss_num + loss_cat + self.cfg.corr_weight * loss_corr
+        # 新增动态loss平衡
+        w_num = 1.0 / (loss_num.detach() + 1e-8)
+        w_cat = 1.0 / (loss_cat.detach() + 1e-8)
+        norm = w_num + w_cat
+        total_loss = 2.0 * (w_num/norm * loss_num + w_cat/norm * loss_cat) # corr_weight先不考虑
+
+        #total_loss = loss_num + loss_cat + self.cfg.corr_weight * loss_corr
         return total_loss, loss_num, loss_cat, loss_corr        
 
 

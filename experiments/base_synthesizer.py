@@ -110,8 +110,8 @@ class BaseSynthesizer:
 
     # ========= 可选：模型持久化 =========
     def save(self, path: str):
-        """子类可按需实现：保存模型权重/processor等"""
-        raise NotImplementedError
+        """子类可按需实现：保存模型权重/processor等, 基类默认不保存"""
+        pass
 
     def load(self, path: str):
         """子类可按需实现：从磁盘加载模型"""

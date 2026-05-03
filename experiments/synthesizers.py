@@ -1,6 +1,6 @@
 # 文件位置: experiments/synthesizers.py
 import pandas as pd
-from dataclasses import asdict
+from dataclasses import asdict, fields, replace
 
 # 导入流水线基类
 from experiments.base_synthesizer import BaseSynthesizer
@@ -58,13 +58,16 @@ class OurDiffusionSynthesizer(BaseSynthesizer):
         """实现具体算法的生成接口"""
         assert self.diffusion is not None, "请先调用 fit() 训练模型"
 
+        # replace 创建临时副本，不修改原始s_cfg
+        temp_cfg = replace(self.s_cfg, num_samples=n_samples)
+
         self.s_cfg.num_samples = n_samples # 把数量写进SamplingConfig
 
         # TSTR / joint / conditional 场景下如何使用 target_class（label 值）：
         # - joint: 内部可能忽略 y_cond，或仅控制 CFG 分支
         # - conditional: 作为 y_cond 传入
         df_gen = self.diffusion.generate(
-            sampling_config=self.s_cfg,
+            sampling_config=temp_cfg,
             y_cond=target_class
         )
         return df_gen
@@ -75,7 +78,7 @@ class OurDiffusionSynthesizer(BaseSynthesizer):
             "algorithm": "MedAGDiffusion",
             "data_config": asdict(self.d_cfg),
             "model_config": asdict(self.m_cfg),
-            "train_config": asdict(self.t_cfg),
+            "training_config": asdict(self.t_cfg),
             "sampling_config": asdict(self.s_cfg),
         }
 
@@ -93,17 +96,33 @@ class OurDiffusionSynthesizer(BaseSynthesizer):
 
     def load(self, path: str):
         import torch, os, json
+        from configs.experiment_configs import (
+            DataConfig, ModelConfig, TrainingConfig, SamplingConfig
+        )
         # 1) 读配置（如果你想从 checkpoint 恢复配置，可以在这里解析）
         cfg_path = os.path.join(path, "config.json")
         if os.path.exists(cfg_path):
             with open(cfg_path, "r") as f:
                 cfg_dict = json.load(f)
-            # TODO: 你可以在这里把 cfg_dict 填回 self.d_cfg / m_cfg / t_cfg / s_cfg
+            # 从json 重建各Config对象，忽略Json中多余的键以保持健壮性
+            def safe_build(cls, d: dict):
+                valid_keys = {f.name for f in fields(cls)}
+                return cls(**{k:v for k, v in d.items() if k in valid_keys})
+            
+            self.d_cfg = safe_build(DataConfig,     cfg_dict.get("data_config", {}))
+            self.m_cfg = safe_build(ModelConfig,    cfg_dict.get("model_config", {}))
+            self.t_cfg = safe_build(TrainingConfig, cfg_dict.get("training_config", {}))
+            self.c_cfg = safe_build(SamplingConfig, cfg_dict.get("sampling_config", {}))
+
+            # 同步会基类的training_cfg/sampling_cfg （BaseSynthesizer使用这两个）
+            self.training_cfg = self.t_cfg
+            self.sampling_cfg = self.s_cfg
 
         # 2) 重建 diffusion + 加载权重
         self.diffusion = MedAGDiffusion(
             model_config=self.m_cfg,
             denoise_class=TabMLPDenoise
         )
+        # 这里的model.pt，我之前训练还没保存过模型呢
         state = torch.load(os.path.join(path, "model.pt"), map_location="cpu")
-        self.diffusion.load_state_dict(state)
+        self.diffusion.load_state_dict(state) 
