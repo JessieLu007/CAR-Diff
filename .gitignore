@@ -3,6 +3,9 @@ results/
 
 # Python 相关
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
 *.py[cod]
 *$py.class
 *.so

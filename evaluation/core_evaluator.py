@@ -163,6 +163,7 @@ class TabularEvaluator:
 
         ml_results = {}
         for clf_name, clf_base in self.classifiers.items():
+            clf_base = sklearn.base.clone(clf_base)
             clf_aug = sklearn.base.clone(clf_base)
 
             # Baseline: 仅真实训练集
@@ -311,4 +312,4 @@ class TabularEvaluator:
         ml_res = self.evaluate_ml_utility()
         cat_proportion = self.evaluate_categorical_proportions() # DataFrame
         return stats, privacy, ml_res, cat_proportion
-        return {**stats, **privacy, 'ml_utility': ml_res, 'categorical_proportions': cat_proportion}
+        # return {**stats, **privacy, 'ml_utility': ml_res, 'categorical_proportions': cat_proportion}

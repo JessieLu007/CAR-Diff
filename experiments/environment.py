@@ -24,7 +24,6 @@ import pandas as pd
 from datetime import datetime
 
 from sklearn.model_selection import StratifiedKFold
-from experiments.experiment_runner import run_diffusion_pipeline
 from configs.experiment_configs import DataConfig, ModelConfig, TrainingConfig, SamplingConfig, ExperimentConfig, make_default_experiment_config
 from experiments.cv_pipeline import run_cv_pipeline, CVPipelineConfig, BaseSynthesizer
 

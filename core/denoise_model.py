@@ -15,6 +15,23 @@ def timestep_embedding(timesteps, dim, max_period=10000):
         embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
     return embedding
 
+class PeriodicEmbedding(nn.Module):
+    """数值特征编码：先进行周期性展开，再映射到隐藏维度"""
+    def __init__(self, num_features, embed_dim, n_frequencies=16):
+        super().__init__()
+        self.n_frequencies = n_frequencies
+        # 可学习的频率参数
+        self.freqs = nn.Parameter(torch.randn(num_features, n_frequencies)*0.02)
+        self.proj = nn.Linear(num_features * n_frequencies * 2, embed_dim)
+
+    def forward(self, x):
+        # x: [B, num_features]
+        # 扩展到 [B, num_features, n_frequencies]
+        x_f = x.unsqueeze(-1) * self.freqs.unsqueeze(0) * 2 * math.pi
+        x_enc = torch.cat([torch.sin(x_f), torch.cos(x_f)], dim=-1)
+        # 展平后投影
+        x_enc = x_enc.reshape(x.shape[0], -1)
+        return self.proj(x_enc)
 
 class MLPResidualBlock(nn.Module):
     """Residual block with conditioning injection"""
@@ -58,44 +75,53 @@ class TabMLPDenoise(nn.Module):
         self.num_numerical = info['num_numerical']
         self.num_classes = info['num_classes'] #list [2, 4, 5]
 
-        total_cat_dim = sum(self.num_classes)
-
-        # ---------- 1. num / cat 分开编码 ----------
+        # ---------- 1. 数值特征编码 ----------
         if self.num_numerical > 0:
-            self.proj_num = nn.Sequential(
-                nn.Linear(self.num_numerical, dim_hidden),
-                nn.SiLU(),
-                nn.LayerNorm(dim_hidden)
-            )
+            self.proj_num = PeriodicEmbedding(self.num_numerical, dim_hidden)
         else:
             self.proj_num = None
 
-        if total_cat_dim > 0:
+        # ---------- 2. 类别特征编码 (独立 Embedding) ----------
+        if len(self.num_classes) > 0:
+            # 为每个分类列创建独立的Embedding空间
+            self.cat_embed_layers = nn.ModuleList([
+                nn.Embedding(c, 16) for c in self.num_classes
+            ])
+            cat_total_emb_dim = len(self.num_classes) * 16
             self.proj_cat = nn.Sequential(
-                nn.Linear(total_cat_dim, dim_hidden),
+                nn.Linear(cat_total_emb_dim, dim_hidden),
                 nn.SiLU(),
                 nn.LayerNorm(dim_hidden)
             )
+            # FiLM 调制层：通过类别信息生成数值特征的缩放和偏移
+            if self.num_numerical > 0:
+                self.cat_to_num = nn.Linear(dim_hidden, dim_hidden * 2)
+                # 初始化为0， 使得初期融合接近于identity(h = h_num + 0)
+                nn.init.zeros_(self.cat_to_num.weight)
+                nn.init.zeros_(self.cat_to_num.bias)
+
         else:
+            self.cat_embed_layers = None
             self.proj_cat = None
 
-        # ---------- 2. 融合层（不再拼 emb） ----------
+        #  ---------- 3. 条件编码 (时间 + 标签) ----------
+        self.time_embed = nn.Sequential(
+            nn.Linear(dim_t, dim_t),
+            nn.SiLU(),
+            nn.Linear(dim_t, dim_t)
+        )
+        # +1 用于处理无条件引导 (unconditional guidance)
+        self.label_emb = nn.Embedding(num_classes_cond + 1, dim_t)
+        # 额外的标签直接注入层
+        self.label_to_hidden = nn.Linear(dim_t, dim_hidden)
+
+        # ---------- 4. 融合与主干 ----------
         self.proj_fuse = nn.Sequential(
             nn.Linear(dim_hidden, dim_hidden),
             nn.SiLU(),
             nn.LayerNorm(dim_hidden)
         )
 
-        # ---------- 3. 时间 / 条件 embedding ----------
-        self.time_embed = nn.Sequential(
-            nn.Linear(dim_t, dim_t),
-            nn.SiLU(),
-            nn.Linear(dim_t, dim_t)
-        )
-
-        self.label_emb = nn.Embedding(num_classes_cond + 1, dim_t)
-
-        # ---------- 4. residual 主干 ----------
         self.layers = nn.ModuleList([
             MLPResidualBlock(dim_hidden, dim_t, dropout)
             for _ in range(num_layers)
@@ -104,57 +130,70 @@ class TabMLPDenoise(nn.Module):
         # ---------- 5. 输出头 ----------
         if self.num_numerical > 0:
             self.out_num = nn.Linear(dim_hidden, self.num_numerical)
-        else:
-            self.out_num = None
 
         self.out_cat = nn.ModuleList([
             nn.Linear(dim_hidden, c) for c in self.num_classes
         ])
+
 
     def forward(self, x_in, timesteps, y):
         B = x_in.shape[0]
 
         # ---------- 1. embedding ----------
         t_emb = self.time_embed(timestep_embedding(timesteps, self.dim_t))
-        y_emb = self.label_emb(y.squeeze().long())
-        emb = t_emb + y_emb   # [B, dim_t]
+        y_raw_emb = self.label_emb(y.squeeze().long())
+        emb = t_emb + y_raw_emb   # 用于AdaLN的条件向量 [B, dim_t]
 
         # ---------- 2. split ----------
         x_num = x_in[:, :self.num_numerical]
-        x_cat = x_in[:, self.num_numerical:]
+        x_cat = x_in[:, self.num_numerical:].long() # 确保是整数型索引
 
         # ---------- 3. encode ----------
+        # A.数值编码
         h_num = self.proj_num(x_num) if self.proj_num is not None else None
-        h_cat = self.proj_cat(x_cat) if self.proj_cat is not None else None
 
+        # B.类别编码（遍历每一列）
+        h_cat = None
+        if self.cat_embed_layers is not None:
+            cat_list = []
+            for i, emb_layer in enumerate(self.cat_embed_layers):
+                cat_list.append(emb_layer(x_cat[:, i]))
+            h_cat = torch.cat(cat_list, dim=-1)
+            h_cat = self.proj_cat(h_cat)
+
+        # --- 4. 融合 (FiLM 机制) ---
         if h_num is not None and h_cat is not None:
-            h = h_num + h_cat
+            # 使用类别信息调制数值特征
+            gamma_beta = self.cat_to_num(h_cat)
+            gamma, beta = gamma_beta.chunk(2, dim=-1)
+            h = h_num * (1 + gamma) + beta
         elif h_num is not None:
             h = h_num
-        elif h_cat is not None:
-            h = h_cat
         else:
-            raise ValueError("Both numerical and categorical features are missing!")
+            h = h_cat
 
-        # ---------- 4. fuse ----------
+        # 注入标签信息到隐藏层
+        h = h + self.label_to_hidden(y_raw_emb)
         h = self.proj_fuse(h)
 
-        # ---------- 5. residual stack ----------
+        # --- 5. 主干网络 (Residual Stack) ---
         for layer in self.layers:
             h = layer(h, emb)
 
-        # ---------- 6. decode ----------
-        if self.out_num is not None:
+        # --- 6. 解码输出 ---
+        # 数值输出
+        if self.num_numerical > 0:
             out_n = self.out_num(h)
         else:
             out_n = torch.empty((B, 0), device=x_in.device)
 
-        out_c = []
+        # 类别输出（每个字段独立预测logits)
+        out_c_list = []
         for head in self.out_cat:
-            out_c.append(head(h))
+            out_c_list.append(head(h))
 
-        if len(out_c) > 0:
-            out_c = torch.cat(out_c, dim=-1)
+        if out_c_list:
+            out_c = torch.cat(out_c_list, dim=-1)
         else:
             out_c = torch.empty((B, 0), device=x_in.device)
 

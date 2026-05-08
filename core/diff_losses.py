@@ -26,6 +26,11 @@ def compute_numerical_loss(model, x_num, x_num_t, model_out, t, noise):
 
     model_num_out = model_out[:, :num_feats]
     loss_num = F.mse_loss(model_num_out, noise)
+
+    # 一次性计算预测的x0, 供相关损失与分布正则共用
+    sqrt_recip = extract(model.sqrt_recip_alphas_cumprod, t, x_num.shape)
+    sqrt_recipml = extract(model.sqrt_recipml_alphas_cumprod, t, x_num.shape)
+    x0_pred = sqrt_recip * x_num_t - sqrt_recipml * model_num_out
         
     loss_corr = 0.0
     if batch_size > 1 and num_feats > 1 and model.cfg.corr_weight > 0:
@@ -33,21 +38,12 @@ def compute_numerical_loss(model, x_num, x_num_t, model_out, t, noise):
         valid_mask = t < threshold
 
         if valid_mask.sum() > 1:
-            sqrt_recip = extract(model.sqrt_recip_alphas_cumprod, t, x_num.shape)
-            sqrt_recipml = extract(model.sqrt_recipml_alphas_cumprod, t, x_num.shape)
-
-            x0_pred = sqrt_recip * x_num_t - sqrt_recipml * model_num_out
             corr_real = distance_correlation(x_num[valid_mask])
             corr_pred = distance_correlation(x0_pred[valid_mask])
             loss_corr = F.mse_loss(corr_pred, corr_real)
 
     # ========== 新增：对预测latent x0的分布做一个极弱正则 ==========
-    if False:
-        with torch.no_grad():
-            sqrt_recip = extract(model.sqrt_recip_alphas_cumprod, t, x_num.shape)
-            sqrt_recipml = extract(model.sqrt_recipml_alphas_cumprod, t, x_num.shape)
-        x0_pred = sqrt_recip * x_num_t - sqrt_recipml * model_num_out # [B, D]
-
+    if getattr(model.cfg, 'use_normal_reg', True):
         # 只在中等噪声区间做一点约束，避免极端阶段干扰
         t_float = t.float() / (model.num_timesteps - 1)
         mid_mask = (t_float >= 0.2) & (t_float <= 0.5)
@@ -88,14 +84,13 @@ def compute_categorical_loss(model, x_cat, model_out, use_basic=False):
 
             # 2. 辅助：batch级别边缘分布对齐
             # 预测的边缘分布：对batch的softmax概率取平均
-            with torch.no_grad():
-                true_marginal = true_marginals[i].to(logits.device)
-
-            pred_marginal = F.softmax(logits, dim=1).mean(dim=0)
+            log_probs = F.log_softmax(logits, dim=1)
+            log_pred_marginal = torch.logsumexp(log_probs, dim=0) - np.log(logits.size(0))
+            true_marginal = true_marginals[i].to(logits.device)
 
             # 使用 cross-entropy 形式：L_marg = - sum p_true * log p_pred
             # 避免 KL 的各种数值陷阱
-            ce_marg = -torch.sum(true_marginal * torch.log(pred_marginal + 1e-8))
+            ce_marg = -torch.sum(true_marginal * log_pred_marginal)
             loss_marginal += ce_marg
             
         if len(slices_for_classes) > 0:
@@ -106,7 +101,7 @@ def compute_categorical_loss(model, x_cat, model_out, use_basic=False):
         return loss_ce + gamma * loss_marginal
     else:
         # 内部定义的微观焦点损失
-        def focal_loss(logits, targets, gamma_base=1.5):
+        def focal_loss(logits, targets):
             ce = F.cross_entropy(logits, targets, reduction='none')
             # 修复：限制pt最大值为0.9999， 防止(1-pt)变成0导致求导Infinity
             pt = torch.clamp(torch.exp(-ce), max=0.9999)
@@ -118,9 +113,9 @@ def compute_categorical_loss(model, x_cat, model_out, use_basic=False):
                     # 严格保证 dtype 为 float32，避免 Double 泄漏
                     max_entropy = torch.log(torch.tensor(len(probs), dtype=torch.float32, device=logits.device))
                     norm_entropy = entropy / (max_entropy + 1e-8)
-                    gamma = gamma_base * (1.0 - norm_entropy)
+                    gamma = cfg.gamma_base * (1.0 - norm_entropy)
             else:
-                gamma = gamma_base
+                gamma = cfg.gamma_base
             return ((1 - pt) ** gamma * ce).mean()
 
         loss_local = 0.0
@@ -133,14 +128,16 @@ def compute_categorical_loss(model, x_cat, model_out, use_basic=False):
 
             # 2. 计算宏观KL对齐损失
             # 当前batch的预测宏观分布
-            pred_marginal = F.softmax(logits, dim=1).mean(dim=0)
-            true_marginal = true_marginals[i]
+            log_probs = F.log_softmax(logits, dim=1)
+            log_pred_marginal = torch.logsumexp(log_probs, dim=0) - np.log(logits.size(0))
+            true_marginal = true_marginals[i].to(logits.device)
 
             # KLDiv: L = target * (log(target) - log(pred))
             kl_div = F.kl_div(
-                torch.log(pred_marginal + 1e-8),
+                log_pred_marginal,
                 true_marginal,
-                reduction='sum'
+                reduction='batchmean',
+                log_target=False
             )
             loss_global += kl_div
             

@@ -10,6 +10,7 @@ class DataConfig:
     inject_physics_prior: bool = False
     random_state: int = 42
 
+
 @dataclass
 class ModelConfig:
     """网络架构参数"""
@@ -19,21 +20,21 @@ class ModelConfig:
     dropout: float = 0.1
     num_timesteps: int = 1000
 
-    # 损失组件 
-    use_adaptive_focal: bool = True #是否使用抵抗饥饿的自适应Focal Loss
-    # Global Marginal Alignment(GMA)权重
-    gma_loss_weight: float = 0.5
-    corr_weight: float = 0.0    # 相关性权重损失
-    corr_t_ratio: float = 0.2   # 相关性出发的噪声阶段比率
+    # 损失组件
+    use_adaptive_focal: bool = True     # 是否使用抵抗饥饿的自适应 Focal Loss
+    gma_loss_weight: float = 0.5        # Global Marginal Alignment(GMA) 权重
+    corr_weight: float = 0.0            # 相关性权重损失
+    corr_t_ratio: float = 0.2          # 相关性触发的噪声阶段比率
+    gamma_base: float = 1.0            # focal loss中的gamma_base设置
 
-    # CFG与后验参数
+    # CFG 与后验参数
     null_class_idx: int = 2
     posterior_switch_ratio: float = 0.3
     cat_temperature_cap: float = 0.6
 
     x0_clamp_min: float = -5.0
-    x0_clamp_max: float = 5.0    
-    
+    x0_clamp_max: float = 5.0
+
 
 @dataclass
 class TrainingConfig:
@@ -41,33 +42,58 @@ class TrainingConfig:
     batch_size: int = 512
     epochs: int = 1000
     lr: float = 1e-4
-    uncond_p: float = 0.1   # CFG 空条件丢弃率
+    uncond_p: float = 0.1   # CFG 空条件丢弃率（仅 *_cond 范式生效）
     patience: int = 20
+    use_normal_reg = True
 
-    # 训练任务类型
-    # full_data: 学整表 P(X, Y)，用于 TSTR / 替代数据
-    # minority_uncond: 只用 label=1 学 P(X | Y=1)
-    # minority_cond: 用全体样本学 P(X | Y)，生成时只要 Y=1 的 X
-    task: Literal['full_data', 'minority_uncond', 'minority_cond'] = 'full_data'
+    # ------------------------------------------------------------------
+    # task：训练范式，调用方始终传入全量数据，内部自动路由
+    #
+    #   "full_data_joint"
+    #       训练数据：全量（target_col 作为普通分类特征保留）
+    #       建模范式：Joint 联合分布 P(X, Y)
+    #       典型用途：TSTR、替代数据集生成
+    #
+    #   "full_data_cond"
+    #       训练数据：全量（target_col 剥离为条件标签）
+    #       建模范式：Conditional P(X | Y)，CFG 引导
+    #       典型用途：按类别精细控制生成质量
+    #
+    #   "minority_uncond"
+    #       训练数据：仅 label=1 子集（内部自动筛选）
+    #       建模范式：无条件 P(X | Y=1)
+    #       典型用途：少数类简单拟真扩增
+    #
+    #   "minority_cond"
+    #       训练数据：全量（target_col 剥离为条件标签）
+    #       建模范式：Conditional P(X | Y)，生成时只采样 Y=1
+    #       典型用途：CFG 引导的少数类增强（分类器提升场景）
+    # ------------------------------------------------------------------
+    task: Literal[
+        'full_data_joint',
+        'full_data_cond',
+        'minority_uncond',
+        'minority_cond',
+    ] = 'full_data_joint'
 
     # 训练/生成的主要目标
-    # fidelity: 拟真（分布贴近真实）
-    # clf_boost: 帮助分类器（允许牺牲一些拟真）
+    # fidelity  : 拟真（分布贴近真实）
+    # clf_boost : 帮助分类器（允许牺牲一些拟真）
     objective: Literal['fidelity', 'clf_boost'] = 'fidelity'
 
 
 @dataclass
 class SamplingConfig:
-    
     num_samples: Optional[int] = None
 
-    # 下方参数通常由gen_strategy自动覆盖，但也可以在此微调
-    cfg_scale_fedility: float = 1.0      #正向引导强度
+    # 下方参数通常由 gen_strategy 自动覆盖，也可手动微调
+    cfg_scale_fedility: float = 1.0
     cfg_scale_boost: float = 3.0
-    temperature_fedility: float = 1.0    #采样温度
+    temperature_fedility: float = 1.0
     temperature_boost: float = 0.7
-    repulse_weight_fedility: float = 0.0 # 负向排斥强度
+    repulse_weight_fedility: float = 0.0
     repulse_weight_boost: float = 1.0
+
 
 @dataclass
 class ExperimentConfig:
@@ -77,25 +103,20 @@ class ExperimentConfig:
     sampling: SamplingConfig
 
     def with_overrides(
-            self,
-            data: dict | None = None,
-            model: dict | None = None,
-            training: dict | None = None,
-            sampling: dict | None = None,
+        self,
+        data: dict | None = None,
+        model: dict | None = None,
+        training: dict | None = None,
+        sampling: dict | None = None,
     ) -> "ExperimentConfig":
-        # 基于当前ExperimentConfig，返回一个更改了指定字段的新副本
-        new_data = replace(self.data, **(data or {}))
-        new_model = replace(self.model, **(model or {}))
-        new_training = replace(self.training, **(training or {}))
-        new_sampling = replace(self.sampling, **(sampling or {}))
-
+        """基于当前配置，返回一个更改了指定字段的新副本"""
         return ExperimentConfig(
-            data = new_data,
-            model = new_model,
-            training = new_training,
-            sampling = new_sampling
+            data=replace(self.data, **(data or {})),
+            model=replace(self.model, **(model or {})),
+            training=replace(self.training, **(training or {})),
+            sampling=replace(self.sampling, **(sampling or {})),
         )
-    
+
 
 def make_default_experiment_config() -> ExperimentConfig:
     return ExperimentConfig(
