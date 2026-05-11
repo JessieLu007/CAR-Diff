@@ -123,6 +123,11 @@ def compute_categorical_loss(model, x_cat, model_out, use_basic=False):
 
         for i, ix in enumerate(slices_for_classes):
             logits = model_cat_out[:, ix]
+            true_marginal = true_marginals[i].to(logits.device)
+
+            # 找到该列中频率最低的类别的占比
+            min_freq = true_marginal.min()
+
             # 1. 计算微观损失
             loss_local += focal_loss(logits, x_cat[:, i])
 

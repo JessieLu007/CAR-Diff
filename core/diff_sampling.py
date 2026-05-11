@@ -18,13 +18,15 @@ def sample_core(model, num_samples: int, y_cond: int, cfg: SamplingConfig):
     # 1. 采样超参（由 objective 决定）
     # ------------------------------------------------------------------ #
     if model.train_cfg.objective == 'fidelity':
-        temperature     = cfg.temperature_fedility
-        cfg_scale       = cfg.cfg_scale_fedility
-        repulse_weight  = cfg.repulse_weight_fedility
+        temperature_num     = 1.0 #cfg.temperature_fedility
+        temperature_cat     = getattr(cfg, 'cat_temperature_cap', 0.8)
+        cfg_scale           = cfg.cfg_scale_fedility
+        repulse_weight      = cfg.repulse_weight_fedility
     else:  # clf_boost
-        temperature     = cfg.temperature_boost
-        cfg_scale       = cfg.cfg_scale_boost
-        repulse_weight  = cfg.repulse_weight_boost
+        temperature_num     = cfg.temperature_boost
+        temperature_cat     = cfg.temperature_boost
+        cfg_scale           = cfg.cfg_scale_boost
+        repulse_weight      = cfg.repulse_weight_boost
 
     # full_data 任务一律用 null 条件，不启用 CFG
     if model.train_cfg.task == 'full_data_joint':
@@ -88,7 +90,7 @@ def sample_core(model, num_samples: int, y_cond: int, cfg: SamplingConfig):
               + extract(model.posterior_mean_coef2, t, x_num.shape) * x_num)
 
         if i > 0:
-            noise   = torch.randn_like(x_num) * temperature
+            noise   = torch.randn_like(x_num) * temperature_num
             log_var = torch.log(extract(model.posterior_variance, t, x_num.shape).clamp(min=1e-20))
             x_num   = mean + torch.exp(0.5 * log_var) * noise
         else:
@@ -98,7 +100,7 @@ def sample_core(model, num_samples: int, y_cond: int, cfg: SamplingConfig):
         new_log_x_cat = torch.empty_like(model_cat_out)
 
         for ix in model.slices_for_classes:
-            logits = model_cat_out[:, ix] / temperature
+            logits = model_cat_out[:, ix] / temperature_cat
             p_x0   = F.softmax(logits, dim=1)
             K      = logits.shape[1]
 

@@ -13,7 +13,8 @@ from .utils import extract, index_to_log_onehot, log_1_min_a, log_add_exp, ohe_t
 from .data_processor import TabularDataProcessor
 from configs.experiment_configs import ModelConfig, TrainingConfig, SamplingConfig, DataConfig
 
-from .diff_losses import compute_categorical_loss, compute_numerical_loss
+from .diff_losses import compute_numerical_loss #compute_categorical_loss, 
+from .cat_loss import compute_categorical_loss
 from .diff_schedules import DiffusionScheduleMixin
 from .diff_sampling import sample_core
 from .diff_training import train_loop
@@ -215,8 +216,11 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
 
         self._init_class_expanded()
 
+        # 将true_marginals加入到meta_info中传递
+        self.meta_info['true_marginals'] = self.true_marginals
+
         self._denoise_fn = self.denoise_class(
-            info=self.meta_info,
+            info=self.meta_info, # 当前info字典中包含了true_marginals
             dim_t=self.cfg.dim_t,
             dim_hidden=self.cfg.dim_hidden,
             num_layers=self.cfg.num_layers,
@@ -346,7 +350,7 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         model_out = self._denoise_fn(x_in, t, y_cond)
 
         loss_num, loss_corr = compute_numerical_loss(self, x_num, x_num_t, model_out, t, noise)
-        loss_cat = compute_categorical_loss(self, x_cat, model_out, use_basic=False)
+        loss_cat = compute_categorical_loss(self, x_cat, model_out, use_basic=self.train_cfg.use_basic)
         
         # 使用不确定性加权公式：Loss = (1 / e^log_var) * L + log_var
         prec_num = torch.exp(-self.log_vars[0])

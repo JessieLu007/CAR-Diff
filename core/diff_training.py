@@ -129,7 +129,7 @@ def train_loop(model, dataloader, train_cfg):
     patience_counter = 0
 
     print(f"\n⏳ 开始训练 (Epochs: {train_cfg.epochs})..."
-          f"Early-stop patience: {train_cfg.patience})...")
+          f"Early-stop patience: {train_cfg.patience}...")
     model._denoise_fn.train()
 
     stop_training = False

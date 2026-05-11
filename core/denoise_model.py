@@ -74,6 +74,7 @@ class TabMLPDenoise(nn.Module):
         self.dim_t = dim_t
         self.num_numerical = info['num_numerical']
         self.num_classes = info['num_classes'] #list [2, 4, 5]
+        true_marginals = info.get('true_marginals', None) #接收先验
 
         # ---------- 1. 数值特征编码 ----------
         if self.num_numerical > 0:
@@ -82,12 +83,14 @@ class TabMLPDenoise(nn.Module):
             self.proj_num = None
 
         # ---------- 2. 类别特征编码 (独立 Embedding) ----------
+        self.cat_dropout = nn.Dropout(0.2) # 设置起点较高的dropout
         if len(self.num_classes) > 0:
             # 为每个分类列创建独立的Embedding空间
             self.cat_embed_layers = nn.ModuleList([
-                nn.Embedding(c, 16) for c in self.num_classes
+                nn.Embedding(c, min(16, c * 2)) for c in self.num_classes
             ])
-            cat_total_emb_dim = len(self.num_classes) * 16
+            cat_total_emb_dim = sum([min(16, c * 2) for c in self.num_classes])
+
             self.proj_cat = nn.Sequential(
                 nn.Linear(cat_total_emb_dim, dim_hidden),
                 nn.SiLU(),
@@ -114,6 +117,24 @@ class TabMLPDenoise(nn.Module):
         self.label_emb = nn.Embedding(num_classes_cond + 1, dim_t)
         # 额外的标签直接注入层
         self.label_to_hidden = nn.Linear(dim_t, dim_hidden)
+        self.gate_layer = nn.Linear(
+            in_features=dim_hidden,
+            out_features=dim_hidden
+        )
+        self.gate_scale = nn.Parameter(torch.zeros(1)) # 初始化为0
+        # 初始化：让模型初始化时倾向于“关闭”门控
+        nn.init.xavier_uniform_(self.gate_layer.weight)
+        nn.init.constant_(self.gate_layer.bias, -1.0)
+
+        # 新增轻量级Self-Attention模块
+        # 在MLP块之间插入一个处理关联性的Attention层
+        self.attn_layer = nn.MultiheadAttention(
+            embed_dim=dim_hidden,
+            num_heads=4,
+            dropout=dropout,
+            batch_first=True
+        )
+        self.attn_norm = nn.LayerNorm(dim_hidden)
 
         # ---------- 4. 融合与主干 ----------
         self.proj_fuse = nn.Sequential(
@@ -134,6 +155,23 @@ class TabMLPDenoise(nn.Module):
         self.out_cat = nn.ModuleList([
             nn.Linear(dim_hidden, c) for c in self.num_classes
         ])
+
+        # 使用真实边缘分布初始化Bias
+        if true_marginals is not None:
+            self._apply_prior_initialization(true_marginals)
+    
+    def _apply_prior_initialization(self, true_marginals):
+        """将分类输出层的偏置初始化为训练集分布的对数"""
+        with torch.no_grad():
+            for i, head in enumerate(self.out_cat):
+                #获取该列的真实分布(p1, p2, ...)
+                prior = true_marginals[i].cpu()
+                # 将其转换为logits形式作为bias
+                log_prior = torch.log(prior + 1e-8)
+                head.bias.copy_(log_prior)
+
+                # 为防止初始化权重干扰Bias, 把该层的weight缩小
+                head.weight.data.mul_(0.1)
 
 
     def forward(self, x_in, timesteps, y):
@@ -164,9 +202,12 @@ class TabMLPDenoise(nn.Module):
         # --- 4. 融合 (FiLM 机制) ---
         if h_num is not None and h_cat is not None:
             # 使用类别信息调制数值特征
+            h_cat = self.cat_dropout(h_cat) # 在进行FiLM调制前丢弃部分类别信号
             gamma_beta = self.cat_to_num(h_cat)
             gamma, beta = gamma_beta.chunk(2, dim=-1)
-            h = h_num * (1 + gamma) + beta
+            # 新增门控机制：让模型自主决定吸收多少类别信息
+            gate = torch.sigmoid(self.gate_layer(h_cat))
+            h = h_num + torch.tanh(self.gate_scale) * gate * (h_num * gamma + beta)
         elif h_num is not None:
             h = h_num
         else:
@@ -175,6 +216,15 @@ class TabMLPDenoise(nn.Module):
         # 注入标签信息到隐藏层
         h = h + self.label_to_hidden(y_raw_emb)
         h = self.proj_fuse(h)
+
+        # --- [新增]Self-Attention增强列间关联 ---
+        #将 h 视为【B,1， dim_hidden】的序列进行self-attention
+        # 这里L=1主要是为了建模特征内部各component的交互，
+        # 如果想建模真正的列间关联，需要将Embedding分开输入，但这会大幅增加计算量
+        # 当下只做特征内的自注意力
+        h_attn = h.unsqueeze(1) # [B, 1, D]
+        h_attn, _ = self.attn_layer(h_attn, h_attn, h_attn)
+        h = self.attn_norm(h + h_attn.squeeze(1))
 
         # --- 5. 主干网络 (Residual Stack) ---
         for layer in self.layers:
