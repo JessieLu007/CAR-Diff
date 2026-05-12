@@ -100,10 +100,10 @@ def train_loop(model, dataloader, train_cfg):
       - 每 50 epoch 打印 num/cat 分量
       - Early stopping 提示包含最优 epoch 信息
     """
-    #optimizer = torch.optim.AdamW(model._denoise_fn.parameters(), lr=train_cfg.lr, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model._denoise_fn.parameters(), lr=train_cfg.lr, weight_decay=1e-4)
 
-    den = model._denoise_fn
-
+    """ den = model._denoise_fn
+    
     optimizer = torch.optim.AdamW(
         [
             {'params': den.time_embed.parameters(),  'lr': train_cfg.lr},
@@ -119,7 +119,7 @@ def train_loop(model, dataloader, train_cfg):
             {'params': den.out_cat.parameters(),     'lr': train_cfg.lr * 1.0},
         ],
         weight_decay=1e-4,
-    )
+    ) """
 
     # 挂载 loss历史到model， 方便外部访问
     history = LossHistory()

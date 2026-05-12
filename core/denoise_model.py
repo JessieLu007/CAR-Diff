@@ -4,10 +4,16 @@ import torch.nn as nn
 import math
 
 
+# ─────────────────────────────────────────────
+# 工具函数
+# ─────────────────────────────────────────────
+
 def timestep_embedding(timesteps, dim, max_period=10000):
     half = dim // 2
     freqs = torch.exp(
-        -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+        -math.log(max_period)
+        * torch.arange(start=0, end=half, dtype=torch.float32)
+        / half
     ).to(device=timesteps.device)
     args = timesteps[:, None].float() * freqs[None]
     embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
@@ -15,140 +21,198 @@ def timestep_embedding(timesteps, dim, max_period=10000):
         embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
     return embedding
 
-class PeriodicEmbedding(nn.Module):
-    """数值特征编码：先进行周期性展开，再映射到隐藏维度"""
-    def __init__(self, num_features, embed_dim, n_frequencies=16):
-        super().__init__()
-        self.n_frequencies = n_frequencies
-        # 可学习的频率参数
-        self.freqs = nn.Parameter(torch.randn(num_features, n_frequencies)*0.02)
-        self.proj = nn.Linear(num_features * n_frequencies * 2, embed_dim)
 
-    def forward(self, x):
-        # x: [B, num_features]
-        # 扩展到 [B, num_features, n_frequencies]
-        x_f = x.unsqueeze(-1) * self.freqs.unsqueeze(0) * 2 * math.pi
+# ─────────────────────────────────────────────
+# 编码模块
+# ─────────────────────────────────────────────
+
+class PeriodicEmbedding(nn.Module):
+    """
+    单列数值编码：sin/cos 展开 → 线性投影到 embed_dim。
+    与旧版相比，这里只处理「单列」，方便逐列 Token 化。
+    """
+    def __init__(self, embed_dim: int, n_frequencies: int = 16):
+        super().__init__()
+        self.freqs = nn.Parameter(torch.randn(n_frequencies) * 0.02)
+        self.proj  = nn.Linear(n_frequencies * 2, embed_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B]  →  [B, embed_dim]
+        x_f   = x.unsqueeze(-1) * self.freqs * 2 * math.pi   # [B, F]
         x_enc = torch.cat([torch.sin(x_f), torch.cos(x_f)], dim=-1)
-        # 展平后投影
-        x_enc = x_enc.reshape(x.shape[0], -1)
         return self.proj(x_enc)
 
+
+# ─────────────────────────────────────────────
+# 主干模块
+# ─────────────────────────────────────────────
+
 class MLPResidualBlock(nn.Module):
-    """Residual block with conditioning injection"""
-    def __init__(self, dim, cond_dim, dropout=0.1):
+    """AdaLN 风格的残差块（不变，保持与旧版一致）"""
+    def __init__(self, dim: int, cond_dim: int, dropout: float = 0.1):
         super().__init__()
-        self.norm = nn.LayerNorm(dim)
-        self.ff = nn.Sequential(
+        self.norm      = nn.LayerNorm(dim)
+        self.ff        = nn.Sequential(
             nn.Linear(dim, dim),
             nn.SiLU(),
             nn.Dropout(dropout),
             nn.Linear(dim, dim),
         )
+        self.cond_proj = nn.Linear(cond_dim, dim * 2)
 
-        self.cond_proj = nn.Linear(cond_dim, dim*2)
+    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+        h             = self.norm(x)
+        scale, shift  = self.cond_proj(emb).chunk(2, dim=-1)
+        h             = h * (1 + scale) + shift
+        return x + self.ff(h)
 
-    def forward(self, x, emb):
-        # ⭐ 关键：先norm再加cond（稳定很多）
-        h = self.norm(x)
-        # AdaLN风格：用条件预测scale和shift
-        cond = self.cond_proj(emb)
-        scale, shift = cond.chunk(2, dim=-1)
-        h = h * (1 + scale) + shift #乘法门控初始化接近恒等变换
 
-        h = self.ff(h)
-        return x + h
+class CrossAttentionBlock(nn.Module):
+    """
+    数值 Token → Query，类别 Token 集合 → Key/Value。
+    让每个数值列在生成时"询问"全部类别背景。
+    """
+    def __init__(self, dim: int, num_heads: int = 4, dropout: float = 0.1):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(
+            embed_dim=dim, num_heads=num_heads,
+            dropout=dropout, batch_first=True
+        )
+        self.norm_q  = nn.LayerNorm(dim)
+        self.norm_kv = nn.LayerNorm(dim)
+        self.norm_out = nn.LayerNorm(dim)
 
+    def forward(
+        self,
+        q_tokens: torch.Tensor,   # [B, Lq, D]  数值 Token
+        kv_tokens: torch.Tensor,  # [B, Lk, D]  类别 Token
+    ) -> torch.Tensor:
+        """返回与 q_tokens 形状相同的增强张量"""
+        q  = self.norm_q(q_tokens)
+        kv = self.norm_kv(kv_tokens)
+        out, _ = self.attn(q, kv, kv)
+        return self.norm_out(q_tokens + out)           # 残差
+
+
+# ─────────────────────────────────────────────
+# 主模型
+# ─────────────────────────────────────────────
 
 class TabMLPDenoise(nn.Module):
+    """
+    改进点：
+      1. 可学习门控尺度（gate_scale），取代硬编码 0.3
+      2. 逐列 Token 化：每一列独享独立编码器，拼成 [B, N_cols, D] 序列
+      3. Cross-Attention：数值 Token Query 类别 Token 的语义背景
+      4. Hybrid Transformer-MLP 主干：TransformerEncoderLayer 处理列间关联，
+         再经 MLPResidualBlock 栈接收时间步 / 标签条件
+    """
+
     def __init__(
         self,
         info,
-        num_classes_cond=2,
-        dim_t=128,
-        dim_hidden=256, # 这里的dim_hidden建议作为每个特征embedding的维度
-        num_layers=3,
-        dropout=0.1
+        num_classes_cond: int = 2,
+        dim_t: int = 128,
+        dim_hidden: int = 256,
+        num_layers: int = 3,
+        dropout: float = 0.1,
+        n_frequencies: int = 16,
+        nhead_col: int = 4,       # 列间 Transformer 头数
+        nhead_cross: int = 4,     # Cross-Attention 头数
     ):
         super().__init__()
 
-        self.dim_t = dim_t
+        self.dim_t         = dim_t
         self.num_numerical = info['num_numerical']
-        self.num_classes = info['num_classes'] #list [2, 4, 5]
-        true_marginals = info.get('true_marginals', None) #接收先验
+        self.num_classes   = info['num_classes']          # list[int]
+        true_marginals     = info.get('true_marginals', None)
 
-        # ---------- 1. 数值特征编码 ----------
+        # ── 1. 逐列编码器 ────────────────────────────────────────────
+        # 数值列：每列独立的 PeriodicEmbedding
         if self.num_numerical > 0:
-            self.proj_num = PeriodicEmbedding(self.num_numerical, dim_hidden)
+            self.num_col_encoders = nn.ModuleList([
+                PeriodicEmbedding(dim_hidden, n_frequencies)
+                for _ in range(self.num_numerical)
+            ])
         else:
-            self.proj_num = None
+            self.num_col_encoders = None
 
-        # ---------- 2. 类别特征编码 (独立 Embedding) ----------
-        self.cat_dropout = nn.Dropout(0.2) # 设置起点较高的dropout
+        # 类别列：每列独立的 Embedding → 线性投影到 dim_hidden
+        self.cat_dropout = nn.Dropout(0.2)
         if len(self.num_classes) > 0:
-            # 为每个分类列创建独立的Embedding空间
             self.cat_embed_layers = nn.ModuleList([
                 nn.Embedding(c, min(16, c * 2)) for c in self.num_classes
             ])
-            cat_total_emb_dim = sum([min(16, c * 2) for c in self.num_classes])
-
-            self.proj_cat = nn.Sequential(
-                nn.Linear(cat_total_emb_dim, dim_hidden),
-                nn.SiLU(),
-                nn.LayerNorm(dim_hidden)
-            )
-            # FiLM 调制层：通过类别信息生成数值特征的缩放和偏移
-            if self.num_numerical > 0:
-                self.cat_to_num = nn.Linear(dim_hidden, dim_hidden * 2)
-                # 初始化为0， 使得初期融合接近于identity(h = h_num + 0)
-                nn.init.zeros_(self.cat_to_num.weight)
-                nn.init.zeros_(self.cat_to_num.bias)
-
+            self.cat_col_projs = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(min(16, c * 2), dim_hidden),
+                    nn.SiLU(),
+                    nn.LayerNorm(dim_hidden),
+                )
+                for c in self.num_classes
+            ])
         else:
             self.cat_embed_layers = None
-            self.proj_cat = None
+            self.cat_col_projs    = None
 
-        #  ---------- 3. 条件编码 (时间 + 标签) ----------
+        # ── 2. 改进 1：可学习门控尺度 ────────────────────────────────
+        # 初始化为 0 → tanh(0)=0 → 训练初期门控完全关闭
+        if self.num_numerical > 0 and len(self.num_classes) > 0:
+            self.gate_layer = nn.Linear(dim_hidden, dim_hidden)
+            nn.init.xavier_uniform_(self.gate_layer.weight)
+            nn.init.constant_(self.gate_layer.bias, -1.0)
+
+            self.cat_to_num   = nn.Linear(dim_hidden, dim_hidden * 2)
+            nn.init.zeros_(self.cat_to_num.weight)
+            nn.init.zeros_(self.cat_to_num.bias)
+
+            # 可学习标量：控制 FiLM 调制的整体幅度
+            self.gate_scale = nn.Parameter(torch.zeros(1))  # ← 改进 1
+
+        # ── 3. 改进 3：Cross-Attention（数值 Query 类别 KV）────────────
+        if self.num_numerical > 0 and len(self.num_classes) > 0:
+            self.cross_attn = CrossAttentionBlock(dim_hidden, nhead_cross, dropout)
+        else:
+            self.cross_attn = None
+
+        # ── 4. 改进 4：列间 Transformer（改进 2 的自注意力升级）─────────
+        # 输入 [B, N_cols, D]，N_cols = num_numerical + len(num_classes)
+        total_cols = self.num_numerical + len(self.num_classes)
+        if total_cols > 1:
+            self.column_transformer = nn.TransformerEncoderLayer(
+                d_model=dim_hidden,
+                nhead=nhead_col,
+                dim_feedforward=dim_hidden * 2,
+                dropout=dropout,
+                batch_first=True,
+                norm_first=True,              # Pre-LN 更稳定
+            )
+        else:
+            self.column_transformer = None
+
+        # ── 5. 条件编码（时间步 + 类别标签）────────────────────────────
         self.time_embed = nn.Sequential(
             nn.Linear(dim_t, dim_t),
             nn.SiLU(),
-            nn.Linear(dim_t, dim_t)
+            nn.Linear(dim_t, dim_t),
         )
-        # +1 用于处理无条件引导 (unconditional guidance)
-        self.label_emb = nn.Embedding(num_classes_cond + 1, dim_t)
-        # 额外的标签直接注入层
+        self.label_emb      = nn.Embedding(num_classes_cond + 1, dim_t)
         self.label_to_hidden = nn.Linear(dim_t, dim_hidden)
-        self.gate_layer = nn.Linear(
-            in_features=dim_hidden,
-            out_features=dim_hidden
-        )
-        self.gate_scale = nn.Parameter(torch.zeros(1)) # 初始化为0
-        # 初始化：让模型初始化时倾向于“关闭”门控
-        nn.init.xavier_uniform_(self.gate_layer.weight)
-        nn.init.constant_(self.gate_layer.bias, -1.0)
 
-        # 新增轻量级Self-Attention模块
-        # 在MLP块之间插入一个处理关联性的Attention层
-        self.attn_layer = nn.MultiheadAttention(
-            embed_dim=dim_hidden,
-            num_heads=4,
-            dropout=dropout,
-            batch_first=True
-        )
-        self.attn_norm = nn.LayerNorm(dim_hidden)
-
-        # ---------- 4. 融合与主干 ----------
+        # ── 6. 聚合投影（Token 均值 → h）────────────────────────────────
         self.proj_fuse = nn.Sequential(
             nn.Linear(dim_hidden, dim_hidden),
             nn.SiLU(),
-            nn.LayerNorm(dim_hidden)
+            nn.LayerNorm(dim_hidden),
         )
 
+        # ── 7. MLP 残差主干（接收条件 emb）──────────────────────────────
         self.layers = nn.ModuleList([
             MLPResidualBlock(dim_hidden, dim_t, dropout)
             for _ in range(num_layers)
         ])
 
-        # ---------- 5. 输出头 ----------
+        # ── 8. 输出头 ────────────────────────────────────────────────
         if self.num_numerical > 0:
             self.out_num = nn.Linear(dim_hidden, self.num_numerical)
 
@@ -156,95 +220,102 @@ class TabMLPDenoise(nn.Module):
             nn.Linear(dim_hidden, c) for c in self.num_classes
         ])
 
-        # 使用真实边缘分布初始化Bias
         if true_marginals is not None:
             self._apply_prior_initialization(true_marginals)
-    
+
+    # ────────────────────────────────────────────────────────────────
     def _apply_prior_initialization(self, true_marginals):
-        """将分类输出层的偏置初始化为训练集分布的对数"""
         with torch.no_grad():
             for i, head in enumerate(self.out_cat):
-                #获取该列的真实分布(p1, p2, ...)
-                prior = true_marginals[i].cpu()
-                # 将其转换为logits形式作为bias
+                prior     = true_marginals[i].cpu()
                 log_prior = torch.log(prior + 1e-8)
                 head.bias.copy_(log_prior)
-
-                # 为防止初始化权重干扰Bias, 把该层的weight缩小
                 head.weight.data.mul_(0.1)
 
-
-    def forward(self, x_in, timesteps, y):
+    # ────────────────────────────────────────────────────────────────
+    def forward(self, x_in: torch.Tensor, timesteps: torch.Tensor, y: torch.Tensor):
         B = x_in.shape[0]
 
-        # ---------- 1. embedding ----------
-        t_emb = self.time_embed(timestep_embedding(timesteps, self.dim_t))
+        # ── 条件向量 ────────────────────────────────────────────────
+        t_emb     = self.time_embed(timestep_embedding(timesteps, self.dim_t))
         y_raw_emb = self.label_emb(y.squeeze().long())
-        emb = t_emb + y_raw_emb   # 用于AdaLN的条件向量 [B, dim_t]
+        emb       = t_emb + y_raw_emb          # [B, dim_t]，用于 AdaLN
 
-        # ---------- 2. split ----------
-        x_num = x_in[:, :self.num_numerical]
-        x_cat = x_in[:, self.num_numerical:].long() # 确保是整数型索引
+        # ── 拆分输入 ─────────────────────────────────────────────────
+        x_num = x_in[:, :self.num_numerical]                   # [B, N_num]
+        x_cat = x_in[:, self.num_numerical:].long()            # [B, N_cat]
 
-        # ---------- 3. encode ----------
-        # A.数值编码
-        h_num = self.proj_num(x_num) if self.proj_num is not None else None
+        # ── 改进 2：逐列 Token 化 ─────────────────────────────────────
+        num_tokens, cat_tokens = [], []
 
-        # B.类别编码（遍历每一列）
-        h_cat = None
+        if self.num_col_encoders is not None:
+            for i, enc in enumerate(self.num_col_encoders):
+                num_tokens.append(enc(x_num[:, i]))            # [B, D]
+
         if self.cat_embed_layers is not None:
-            cat_list = []
-            for i, emb_layer in enumerate(self.cat_embed_layers):
-                cat_list.append(emb_layer(x_cat[:, i]))
-            h_cat = torch.cat(cat_list, dim=-1)
-            h_cat = self.proj_cat(h_cat)
+            for i, (emb_layer, proj) in enumerate(
+                zip(self.cat_embed_layers, self.cat_col_projs)
+            ):
+                tok = proj(emb_layer(x_cat[:, i]))             # [B, D]
+                cat_tokens.append(self.cat_dropout(tok))
 
-        # --- 4. 融合 (FiLM 机制) ---
-        if h_num is not None and h_cat is not None:
-            # 使用类别信息调制数值特征
-            h_cat = self.cat_dropout(h_cat) # 在进行FiLM调制前丢弃部分类别信号
-            gamma_beta = self.cat_to_num(h_cat)
+        # ── 改进 3：Cross-Attention（数值 Query 类别 KV）────────────────
+        # 在 Token 化完成后、拼接前对数值 Token 做跨模态增强
+        if self.cross_attn is not None and num_tokens and cat_tokens:
+            # 聚合类别侧均值，供 FiLM 调制使用
+            h_cat_mean = torch.stack(cat_tokens, dim=1).mean(dim=1)  # [B, D]
+
+            # FiLM 调制（改进 1：可学习 gate_scale）
+            gamma_beta = self.cat_to_num(h_cat_mean)
             gamma, beta = gamma_beta.chunk(2, dim=-1)
-            # 新增门控机制：让模型自主决定吸收多少类别信息
-            gate = torch.sigmoid(self.gate_layer(h_cat))
-            h = h_num + torch.tanh(self.gate_scale) * gate * (h_num * gamma + beta)
-        elif h_num is not None:
-            h = h_num
-        else:
-            h = h_cat
+            gate        = torch.sigmoid(self.gate_layer(h_cat_mean))
+            scale_coef  = torch.tanh(self.gate_scale)          # ← 初始 0，自适应增长
 
-        # 注入标签信息到隐藏层
+            # 对每个数值 Token 施加 FiLM 调制
+            num_tokens = [
+                tok + scale_coef * gate * (tok * gamma + beta)
+                for tok in num_tokens
+            ]
+
+            # Cross-Attention：数值 Token 去询问类别 Token
+            num_seq = torch.stack(num_tokens, dim=1)           # [B, N_num, D]
+            cat_seq = torch.stack(cat_tokens, dim=1)           # [B, N_cat, D]
+            num_seq = self.cross_attn(num_seq, cat_seq)        # [B, N_num, D]
+            num_tokens = [num_seq[:, i] for i in range(num_seq.shape[1])]
+
+        # ── 改进 4：拼接所有列 Token → 列间 Transformer ─────────────────
+        all_tokens = num_tokens + cat_tokens                   # list of [B, D]
+
+        if all_tokens:
+            token_seq = torch.stack(all_tokens, dim=1)        # [B, N_cols, D]
+        else:
+            raise ValueError("No tokens to process.")
+
+        if self.column_transformer is not None:
+            token_seq = self.column_transformer(token_seq)    # [B, N_cols, D]
+
+        # Token 均值聚合 → 单一隐向量
+        h = token_seq.mean(dim=1)                             # [B, D]
+
+        # 注入标签信息
         h = h + self.label_to_hidden(y_raw_emb)
         h = self.proj_fuse(h)
 
-        # --- [新增]Self-Attention增强列间关联 ---
-        #将 h 视为【B,1， dim_hidden】的序列进行self-attention
-        # 这里L=1主要是为了建模特征内部各component的交互，
-        # 如果想建模真正的列间关联，需要将Embedding分开输入，但这会大幅增加计算量
-        # 当下只做特征内的自注意力
-        h_attn = h.unsqueeze(1) # [B, 1, D]
-        h_attn, _ = self.attn_layer(h_attn, h_attn, h_attn)
-        h = self.attn_norm(h + h_attn.squeeze(1))
-
-        # --- 5. 主干网络 (Residual Stack) ---
+        # ── MLP 残差主干 ──────────────────────────────────────────────
         for layer in self.layers:
             h = layer(h, emb)
 
-        # --- 6. 解码输出 ---
-        # 数值输出
+        # ── 输出头 ────────────────────────────────────────────────────
         if self.num_numerical > 0:
             out_n = self.out_num(h)
         else:
             out_n = torch.empty((B, 0), device=x_in.device)
 
-        # 类别输出（每个字段独立预测logits)
-        out_c_list = []
-        for head in self.out_cat:
-            out_c_list.append(head(h))
-
-        if out_c_list:
-            out_c = torch.cat(out_c_list, dim=-1)
-        else:
-            out_c = torch.empty((B, 0), device=x_in.device)
+        out_c_list = [head(h) for head in self.out_cat]
+        out_c = (
+            torch.cat(out_c_list, dim=-1)
+            if out_c_list
+            else torch.empty((B, 0), device=x_in.device)
+        )
 
         return torch.cat([out_n, out_c], dim=-1)

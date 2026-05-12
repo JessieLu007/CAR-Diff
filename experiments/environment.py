@@ -4,15 +4,15 @@ import sys
 
 def init_environment():
     """一次性设置环境变量和路径"""
-    os.environ["OMP_NUM_THREADS"] = "1"
-    os.environ["OPENBLAS_NUM_THREADS"] = "1"
-    os.environ["MKL_NUM_THREADS"] = "1"
-    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+    #os.environ["OMP_NUM_THREADS"] = "1"
+    #os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    #os.environ["MKL_NUM_THREADS"] = "1"
+    #os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+    #os.environ["NUMEXPR_NUM_THREADS"] = "1"
     sys.path.append("..")
     # 也可以在这里导入 env_config 并执行其初始化
     import env_config
-    return True
+    return 0
 
 import sys
 import torch
