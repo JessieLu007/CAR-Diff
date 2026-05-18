@@ -1,0 +1,47 @@
+{
+    "breast_cancer": {
+        "categorical": [],
+        "numerical":["age", "BMI", "Glucose", "Insulin", "HOMA", "Leptin", "Adiponectin", "Resistin", "MCP.1"],
+        "target":"label"
+    },
+
+    "diabetes_risk": {
+        "categorical": ["Gender", "Polyuria", "Polydipsia", "sudden weight", "weakness", "Polyphagia", "Genital thrush", "visual blurring", "Itching", "Irritability", "delayed healing", "partial paresis", "muscle stiffness", "Alopecia", "Obesity"],
+        "numerical":["Age"],
+        "target":"label"
+    },
+
+    "framingham": {
+        "categorical": ["male", "education", "currentSmoker", "cigsPerDay", "BPMeds", "prevalentStroke", "prevalentHyp", "diabetes"],
+        "numerical":["age", "totChol", "sysBP", "diaBP", "BMI", "heartRate", "glucose"],
+        "target":"label"
+    },
+
+    "hepatitis": {
+        "categorical": ["sex", "steroid", "antivirals", "fatigue", "malaise", 
+        "anorexia", "liver_big", "liver_firm", "spleen_palpable", "spiders", "ascites",
+        "varices", "histology"],
+        "numerical":["age", "bilirubin", "alk_phosphate", "sgot", "albumin", "protime"], 
+        "target":"label"
+    },
+
+    "pima": {
+        "categorical": [],
+        "numerical":["Pregnancies", "Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI", "DiabetesPedigreeFunction", "Age"],
+        "target":"label"
+    },
+
+    "tcga": {
+        "categorical": ["Gender", "Race", "IDH1", "TP53", "ATRX", "PTEN", "EGFR", "CIC","MUC16",
+    "PIK3CA", "NF1", "PIK3R1", "FUBP1", "RB1", "NOTCH1","CSMD3", "SMARCA4", "GRIN2A", "IDH2", "FAT4", "PDGFRA"],
+        "numerical":["Age_at_diagnosis"],
+        "target":"label"
+    },
+
+    "thyroid": {
+        "categorical": ["Age"],
+        "numerical":["Gender", "Smoking", "Hx Smoking", "Hx Radiothreapy", "Thyroid Function", "Physical Examination",
+    "Adenopathy", "Pathology", "Focality", "Risk", "T", "N", "M", "Stage", "Response"],
+        "target":"label"
+    }
+}

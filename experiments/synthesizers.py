@@ -1,52 +1,115 @@
 # 文件位置: experiments/synthesizers.py
+
+import os
+import json
+import torch
 import pandas as pd
-from dataclasses import asdict, fields, replace
 
-# 导入流水线基类
-from experiments.base_synthesizer import BaseSynthesizer
+from dataclasses import asdict, replace, fields
+from typing import Optional
 
-# 导入算法底层组件
-from configs.experiment_configs import DataConfig, ModelConfig, TrainingConfig, SamplingConfig, ExperimentConfig
+from configs.experiment_configs import (
+    DataConfig,
+    ModelConfig,
+    TrainingConfig,
+    SamplingConfig,
+    ExperimentConfig,
+)
+
 from core.denoise_model import TabMLPDenoise
 from core.diffusion import MedAGDiffusion
 
 
-class OurDiffusionSynthesizer(BaseSynthesizer):
-    """
-    为 MedAGDiffusion 定制的包裹器：
-      - 适配 BaseSynthesizer 接口
-      - 内部与 MedAGDiffusion/TabMLPDenoise 高度耦合
-    """
-    def __init__(self, target_col: str, cat_cols: list[str], exp_cfg: ExperimentConfig):
-        super().__init__(
-            target_col, 
-            cat_cols, 
-            training_cfg=exp_cfg.training,
-            sampling_cfg = exp_cfg.sampling
-            )
+# =========================================================
+# 主 Synthesizer
+# =========================================================
+class MedSynth:
 
+    def __init__(
+            self,
+            target_col: str,
+            cat_cols: list[str],
+            exp_cfg: ExperimentConfig,
+    ):
+
+        self.target_col = target_col
+        self.cat_cols = cat_cols
+
+        # 完整实验配置
+        self.exp_cfg = exp_cfg
+
+        # 配置快捷引用
         self.d_cfg = exp_cfg.data
         self.m_cfg = exp_cfg.model
         self.t_cfg = exp_cfg.training
         self.s_cfg = exp_cfg.sampling
+        self.p_cfg = exp_cfg.pipeline
 
-        self.diffusion: MedAGDiffusion | None = None
+        # diffusion模型
+        self.diffusion: Optional[MedAGDiffusion] = None
 
-    def _fit_algorithm(self, df_train: pd.DataFrame):
-        """实现具体算法的训练接口"""
-        # 自动推断数值特征列
-        num_cols = [c for c in df_train.columns
-                    if c not in self.cat_cols and c != self.target_col]
+        # 数据分布统计
+        self.target_dist = None
 
-        # 实例化扩散模型
+    # =====================================================
+    # 训练
+    # =====================================================
+    def fit(
+            self,
+            df_train: pd.DataFrame,
+            df_val: Optional[pd.DataFrame] = None
+    ):
+
+        # -------------------------------------------------
+        # 统计类别分布
+        # -------------------------------------------------
+        counts = df_train[self.target_col].value_counts()
+
+        total = len(df_train)
+
+        target_class = 1
+
+        target_count = int(counts.get(target_class, 0))
+
+        background_count = int(total - target_count)
+
+        ir = (
+            background_count / target_count
+            if target_count > 0
+            else float('inf')
+        )
+
+        self.target_dist = {
+            "target_class": target_class,
+            "target_count": target_count,
+            "background_count": background_count,
+            "total": total,
+            "IR": ir,
+        }
+
+        # -------------------------------------------------
+        # 自动推断数值列
+        # -------------------------------------------------
+        num_cols = [
+            c for c in df_train.columns
+            if c not in self.cat_cols
+               and c != self.target_col
+        ]
+
+        # -------------------------------------------------
+        # 创建 diffusion
+        # -------------------------------------------------
         self.diffusion = MedAGDiffusion(
             model_config=self.m_cfg,
             denoise_class=TabMLPDenoise
         )
 
-        # 调用扩散模型的 fit
+        # -------------------------------------------------
+        # 开始训练
+        # -------------------------------------------------
         self.diffusion.fit(
-            df=df_train,
+            df_train=df_train,
+            df_val=df_val,
             target_col=self.target_col,
             num_cols=num_cols,
             cat_cols=self.cat_cols,
@@ -54,75 +117,229 @@ class OurDiffusionSynthesizer(BaseSynthesizer):
             data_config=self.d_cfg,
         )
 
-    def _generate_algorithm(self, n_samples: int, target_class: int) -> pd.DataFrame:
-        """实现具体算法的生成接口"""
-        assert self.diffusion is not None, "请先调用 fit() 训练模型"
+    # =====================================================
+    # 自动决定生成数量
+    # =====================================================
+    def _decide_n_samples(
+            self,
+            target_class: int
+    ) -> int:
 
-        # replace 创建临时副本，不修改原始s_cfg
-        temp_cfg = replace(self.s_cfg, num_samples=n_samples)
+        assert self.target_dist is not None, \
+            "请先 fit()"
 
-        self.s_cfg.num_samples = n_samples # 把数量写进SamplingConfig
+        task = self.t_cfg.task
 
-        # TSTR / joint / conditional 场景下如何使用 target_class（label 值）：
-        # - joint: 内部可能忽略 y_cond，或仅控制 CFG 分支
-        # - conditional: 作为 y_cond 传入
+        objective = self.t_cfg.objective
+
+        t_count = self.target_dist["target_count"]
+
+        b_count = self.target_dist["background_count"]
+
+        total = self.target_dist["total"]
+
+        ir = self.target_dist["IR"]
+
+        # -------------------------------------------------
+        # full joint/cond
+        # -------------------------------------------------
+        if task in (
+                "full_data_joint",
+                "full_data_cond"
+        ):
+            return total
+
+        # -------------------------------------------------
+        # minority
+        # -------------------------------------------------
+        if task in (
+                "minority_uncond",
+                "minority_cond"
+        ):
+
+            if objective == "fidelity":
+
+                return (
+                    t_count
+                    if t_count > 0 else 1
+                )
+
+            else:
+
+                if t_count == 0:
+                    return 1
+
+                if ir >= 2:
+                    return max(
+                        b_count - t_count,
+                        1
+                    )
+
+                return 2 * t_count
+
+        return total
+
+    # =====================================================
+    # 生成
+    # =====================================================
+    def generate(
+            self,
+            target_class: int = 1
+    ) -> pd.DataFrame:
+
+        assert self.diffusion is not None, \
+            "请先 fit()"
+
+        # -------------------------------------------------
+        # 自动决定生成数量
+        # -------------------------------------------------
+        if self.s_cfg.num_samples is not None:
+
+            n_samples = self.s_cfg.num_samples
+
+        else:
+
+            n_samples = self._decide_n_samples(
+                target_class
+            )
+
+        print(
+            f"\n🎲 开始生成:"
+            f"\n   task={self.t_cfg.task}"
+            f"\n   objective={self.t_cfg.objective}"
+            f"\n   target_class={target_class}"
+            f"\n   n_samples={n_samples}"
+        )
+
+        # -------------------------------------------------
+        # 临时生成配置
+        # -------------------------------------------------
+        temp_cfg = replace(
+            self.s_cfg,
+            num_samples=n_samples
+        )
+
+        # -------------------------------------------------
+        # diffusion generate
+        # -------------------------------------------------
         df_gen = self.diffusion.generate(
             sampling_config=temp_cfg,
             y_cond=target_class
         )
+
         return df_gen
 
-    def get_config_dict(self) -> dict:
-        """返回完整实验配置，用于保存和复盘"""
-        return {
-            "algorithm": "MedAGDiffusion",
-            "data_config": asdict(self.d_cfg),
-            "model_config": asdict(self.m_cfg),
-            "training_config": asdict(self.t_cfg),
-            "sampling_config": asdict(self.s_cfg),
-        }
+    # =====================================================
+    # 获取完整配置
+    # =====================================================
+    def get_config_dict(self):
 
-    # 可选：给 save/load 一个简单实现
+        return asdict(self.exp_cfg)
+
+    # =====================================================
+    # 保存
+    # =====================================================
     def save(self, path: str):
-        import torch, os, json
-        assert self.diffusion is not None, "模型尚未训练，无法保存"
+
+        assert self.diffusion is not None, \
+            "模型尚未训练"
 
         os.makedirs(path, exist_ok=True)
-        # 1) 保存权重
-        torch.save(self.diffusion.state_dict(), os.path.join(path, "model.pt"))
-        # 2) 保存配置
-        with open(os.path.join(path, "config.json"), "w") as f:
-            json.dump(self.get_config_dict(), f, indent=2)
 
-    def load(self, path: str):
-        import torch, os, json
-        from configs.experiment_configs import (
-            DataConfig, ModelConfig, TrainingConfig, SamplingConfig
+        # -------------------------------------------------
+        # 保存模型权重
+        # -------------------------------------------------
+        torch.save(
+            self.diffusion.state_dict(),
+            os.path.join(path, "model.pt")
         )
-        # 1) 读配置（如果你想从 checkpoint 恢复配置，可以在这里解析）
-        cfg_path = os.path.join(path, "config.json")
-        if os.path.exists(cfg_path):
-            with open(cfg_path, "r") as f:
+
+        # -------------------------------------------------
+        # 保存配置
+        # -------------------------------------------------
+        with open(
+                os.path.join(path, "config.json"),
+                "w",
+                encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                self.get_config_dict(),
+                f,
+                indent=4,
+                ensure_ascii=False
+            )
+
+    # =====================================================
+    # 加载
+    # =====================================================
+    def load(self, path: str):
+
+        config_path = os.path.join(
+            path,
+            "config.json"
+        )
+
+        if os.path.exists(config_path):
+
+            with open(
+                    config_path,
+                    "r",
+                    encoding="utf-8"
+            ) as f:
+
                 cfg_dict = json.load(f)
-            # 从json 重建各Config对象，忽略Json中多余的键以保持健壮性
-            def safe_build(cls, d: dict):
-                valid_keys = {f.name for f in fields(cls)}
-                return cls(**{k:v for k, v in d.items() if k in valid_keys})
-            
-            self.d_cfg = safe_build(DataConfig,     cfg_dict.get("data_config", {}))
-            self.m_cfg = safe_build(ModelConfig,    cfg_dict.get("model_config", {}))
-            self.t_cfg = safe_build(TrainingConfig, cfg_dict.get("training_config", {}))
-            self.c_cfg = safe_build(SamplingConfig, cfg_dict.get("sampling_config", {}))
 
-            # 同步会基类的training_cfg/sampling_cfg （BaseSynthesizer使用这两个）
-            self.training_cfg = self.t_cfg
-            self.sampling_cfg = self.s_cfg
+            # -------------------------------------------------
+            # 安全重建 Config
+            # -------------------------------------------------
+            def safe_build(cls, d):
 
-        # 2) 重建 diffusion + 加载权重
+                valid_keys = {
+                    f.name for f in fields(cls)
+                }
+
+                return cls(
+                    **{
+                        k: v for k, v in d.items()
+                        if k in valid_keys
+                    }
+                )
+
+            self.d_cfg = safe_build(
+                DataConfig,
+                cfg_dict.get("data", {})
+            )
+
+            self.m_cfg = safe_build(
+                ModelConfig,
+                cfg_dict.get("model", {})
+            )
+
+            self.t_cfg = safe_build(
+                TrainingConfig,
+                cfg_dict.get("training", {})
+            )
+
+            self.s_cfg = safe_build(
+                SamplingConfig,
+                cfg_dict.get("sampling", {})
+            )
+
+        # -------------------------------------------------
+        # 重建 diffusion
+        # -------------------------------------------------
         self.diffusion = MedAGDiffusion(
             model_config=self.m_cfg,
             denoise_class=TabMLPDenoise
         )
-        # 这里的model.pt，我之前训练还没保存过模型呢
-        state = torch.load(os.path.join(path, "model.pt"), map_location="cpu")
-        self.diffusion.load_state_dict(state) 
+
+        # -------------------------------------------------
+        # 加载权重
+        # -------------------------------------------------
+        state = torch.load(
+            os.path.join(path, "model.pt"),
+            map_location="cpu"
+        )
+
+        self.diffusion.load_state_dict(state)

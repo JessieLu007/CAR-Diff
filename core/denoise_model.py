@@ -190,6 +190,11 @@ class TabMLPDenoise(nn.Module):
         else:
             self.column_transformer = None
 
+        # 添加 cls token (classification token) 
+        self.cls_token = nn.Parameter(
+            torch.randn(1, 1, dim_hidden) * 0.02
+        )
+
         # ── 5. 条件编码（时间步 + 类别标签）────────────────────────────
         self.time_embed = nn.Sequential(
             nn.Linear(dim_t, dim_t),
@@ -288,6 +293,8 @@ class TabMLPDenoise(nn.Module):
 
         if all_tokens:
             token_seq = torch.stack(all_tokens, dim=1)        # [B, N_cols, D]
+            cls_token = self.cls_token.expand(B, -1, -1)
+            token_seq = torch.cat([cls_token, token_seq], dim=1)
         else:
             raise ValueError("No tokens to process.")
 
@@ -295,7 +302,7 @@ class TabMLPDenoise(nn.Module):
             token_seq = self.column_transformer(token_seq)    # [B, N_cols, D]
 
         # Token 均值聚合 → 单一隐向量
-        h = token_seq.mean(dim=1)                             # [B, D]
+        h = token_seq[:,0]                            
 
         # 注入标签信息
         h = h + self.label_to_hidden(y_raw_emb)

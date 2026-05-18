@@ -12,7 +12,7 @@ def init_environment():
     sys.path.append("..")
     # 也可以在这里导入 env_config 并执行其初始化
     import env_config
-    return 0
+    #return 0
 
 import sys
 import torch
@@ -25,7 +25,6 @@ from datetime import datetime
 
 from sklearn.model_selection import StratifiedKFold
 from configs.experiment_configs import DataConfig, ModelConfig, TrainingConfig, SamplingConfig, ExperimentConfig, make_default_experiment_config
-from experiments.cv_pipeline import run_cv_pipeline, CVPipelineConfig, BaseSynthesizer
 
 '''
 # 2. (可选) 医学物理先验回调函数

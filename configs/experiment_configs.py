@@ -10,6 +10,11 @@ class DataConfig:
     inject_physics_prior: bool = False
     random_state: int = 42
 
+@dataclass
+class PipelineConfig:
+    random_state: int = 42
+    save_base_dir: str = "results"
+
 
 @dataclass
 class ModelConfig:
@@ -102,6 +107,7 @@ class ExperimentConfig:
     model: ModelConfig
     training: TrainingConfig
     sampling: SamplingConfig
+    pipeline: PipelineConfig
 
     def with_overrides(
         self,
@@ -109,6 +115,7 @@ class ExperimentConfig:
         model: dict | None = None,
         training: dict | None = None,
         sampling: dict | None = None,
+        pipeline: dict | None = None
     ) -> "ExperimentConfig":
         """基于当前配置，返回一个更改了指定字段的新副本"""
         return ExperimentConfig(
@@ -116,6 +123,7 @@ class ExperimentConfig:
             model=replace(self.model, **(model or {})),
             training=replace(self.training, **(training or {})),
             sampling=replace(self.sampling, **(sampling or {})),
+            pipeline=replace(self.pipeline, **(pipeline or {}))
         )
 
 
@@ -125,4 +133,5 @@ def make_default_experiment_config() -> ExperimentConfig:
         model=ModelConfig(),
         training=TrainingConfig(),
         sampling=SamplingConfig(),
+        pipeline=PipelineConfig()
     )

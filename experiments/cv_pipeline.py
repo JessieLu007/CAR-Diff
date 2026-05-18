@@ -21,16 +21,12 @@ class CVPipelineConfig:
     random_state: int = 42
     save_base_dir: str = "results"
     
-    # 是否在生成结束后自动调用 Evaluator 计算指标
-    auto_evaluate: bool = False
-
 # =====================================================================
 # 2. 核心大管线：执行 5-Fold，保存结果，一键评估
 # =====================================================================
 def run_cv_pipeline(
     df_all: pd.DataFrame,
     target_col: str,
-    cat_cols: list,
     dataset_name: str,
     synthesizer: BaseSynthesizer, 
     cfg: CVPipelineConfig = CVPipelineConfig()
@@ -91,36 +87,33 @@ def run_cv_pipeline(
     with open(os.path.join(save_path, "experiment_configs.json"), 'w') as f:
         json.dump(final_config, f, indent=4)
 
-    # ==========================================
-    # 自动评估 (可选)
-    # ==========================================
-    if cfg.auto_evaluate:
-        print("\n📊 数据保存完毕，自动启动评估器 (Evaluator)...")
-        evaluator = CrossValidationEvaluator(fold_results, target_col, cat_cols)
-        stats_agg, ml_agg = evaluator.run()
-        evaluator.save_results(stats_agg, ml_agg, save_dir=save_path)
-
     print(f"\n✅ 全部任务完美收官！请前往 {save_path} 查看报告。")
     return fold_results
 
 # =====================================================================
-# 3. 简化单次运行：执行一次运行用于模型调整
+# 3. 简化单次运行：运行单次训练-验证-测试分割的评估流程 
 # =====================================================================
 from sklearn.model_selection import train_test_split
+import pickle
+import json
 
 def run_single_split_pipeline(
         df_all: pd.DataFrame,
         target_col: str,
-        cat_cols: list,
         dataset_name: str,
         synthesizer:BaseSynthesizer,
         cfg: CVPipelineConfig,
-        test_size: float = 0.2
+        train_ratio: float = 0.7,   # 新增参数，训练集比例
+        val_ratio: float = 0.1,     # 新增参数，验证集比例
+        test_ratio: float = 0.2,    # 新增参数，测试集比例
 ):
     #assert target_col in df_all.columns, f"数据集中找不到目标列"
+    assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, \
+        "训练、验证和测试集的比例之和必须为 1.0"
+    
     unique_classes = df_all[target_col].nunique()
     stratify_col = df_all[target_col] if unique_classes > 1 else None
-    """Hold-out Validation，复用CV的评估和落盘系统"""
+
     algo_name = synthesizer.__class__.__name__
     timestamp = datetime.now().strftime("%m%d_%H%M%S")
 
@@ -129,16 +122,30 @@ def run_single_split_pipeline(
     save_path = os.path.join(dataset_dir, f"SingleRun_{algo_name}_{timestamp}")
     os.makedirs(save_path, exist_ok=True)
 
-    print(f"⚡ 开始单次评估 | 算法: {algo_name} | 测试集比例: {test_size}")
+    print(f"⚡ 开始单次评估 | 算法: {algo_name} | 训练/验证/测试比例: {train_ratio}:{val_ratio}:{test_ratio}")
 
-    # 1. 单次分层切分
-    df_train, df_test = train_test_split(
-        df_all, test_size = test_size, stratify=stratify_col, random_state=cfg.random_state
+    # 1. 两次分层切分以获得训练、验证、测试集
+    # 1.1 划分临时训练、验证集和测试集
+    df_temp, df_test = train_test_split(
+        df_all, test_size=test_ratio, stratify=stratify_col, random_state=cfg.random_state
     )
+    # 针对df_temp调整分层列（如果存在）
+    stratify_col_temp = df_temp[target_col] if unique_classes > 1 else None
+
+    # 计算 df_temp中验证集占的比例 val_ratio_in_temp = val_ratio / (train_ratio + val_ratio)
+    if train_ratio + val_ratio == 0:
+        val_ratio_in_temp = 0 # safe code for no validation set
+    else:
+        val_ratio_in_temp = val_ratio / (train_ratio + val_ratio)
+    # 1.2 从临时训练、验证集分出训练集和验证集
+    df_train, df_val = train_test_split(
+        df_temp, test_size = val_ratio_in_temp, stratify=stratify_col_temp, random_state=cfg.random_state
+    )
+    print(f"数据划分完成：训练集 {len(df_train)} 条, 验证集 {len(df_val)} 条, 测试集 {len(df_test)} 条")
 
     # 2. 拟合与生成
     print(f"\n>>> 正在拟合模型与生成数据...")
-    synthesizer.fit(df_train)
+    synthesizer.fit(df_train, df_val=df_val) # 将验证集传递给synthesizer.fit方法
     synthesizer.save(save_path)
 
 
@@ -146,12 +153,12 @@ def run_single_split_pipeline(
     df_fake = synthesizer.generate(
         target_class=global_minority_class,
     )
-    #print("DEBUG: df_fake columns in pipeline:", df_fake.columns.tolist())
 
     # 3. 包装成K=1的fold_results列表
     fold_results = [{
         'fold': 1,
         'df_real_train': df_train,
+        'df_real_val': df_val, #新增验证集
         'df_real_test': df_test,
         'df_fake': df_fake,
         'df_save_loc': save_path
@@ -163,21 +170,9 @@ def run_single_split_pipeline(
 
     # 4.5 额外保存csv文件方便查看
     df_train.to_csv(os.path.join(save_path, "real_train.csv"), index=False)
+    df_val.to_csv(os.path.join(save_path, "real_val.csv"), index=False) # 保存验证集
     df_test.to_csv(os.path.join(save_path, "real_test.csv"), index=False)
     df_fake.to_csv(os.path.join(save_path, "fake_full.csv"), index=False)
-
-    # 5. 复用Evaluator
-    if cfg.auto_evaluate:
-        print("\n📊 数据生成完毕，正在进行质量评估...")
-        evaluator = CrossValidationEvaluator(fold_results, target_col, cat_cols)
-        stats_agg, ml_agg = evaluator.run()
-        evaluator.save_results(stats_agg, ml_agg, save_dir=save_path)
-
-    # 6. 保存配置文件, 又synthesizers.py中的save()统一负责
-    if False:
-        config_dict = synthesizer.get_config_dict()
-        with open(os.path.join(save_path, "config.json"), 'w') as f:
-            json.dump(config_dict, f, indent=4)
         
     print(f"\n✅ 单次实验完成！报告在: {save_path}")
     return fold_results

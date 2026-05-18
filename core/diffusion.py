@@ -151,7 +151,8 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
 
     def fit(
         self,
-        df: pd.DataFrame,
+        df_train: pd.DataFrame,
+        df_val: pd.DataFrame,
         target_col: str,
         num_cols: list,
         cat_cols: list,
@@ -160,8 +161,8 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
     ):
         self.train_cfg = train_config
         self.target_col = target_col
-        self.original_df_columns = df.columns.tolist()
-        df_train = df.copy()
+        self.original_df_columns = df_train.columns.tolist()
+        #df_train = train.copy()
 
         # 记录目标列分布信息（始终基于全量数据统计）
         counts = df_train[target_col].value_counts()
@@ -174,20 +175,45 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
             'original_total': len(df_train),
         }
 
-        # 数据路由：根据 task 决定送给 processor 的数据与标签
-        df_train_for_proc, self.actual_cat_cols, y_train_tensor = \
+        # --- 数据处理流程 ---
+
+        # 1. 处理训练数据
+        df_train_for_proc, actual_cat_cols_for_processor, y_train_tensor = \
             self._route_training_data(df_train, target_col, cat_cols)
+        
+        self.actual_cat_cols = actual_cat_cols_for_processor # 保存实际分类列给后续使用
 
         # 构建 & 拟合数据处理器
         self.data_processor = TabularDataProcessor(
             num_cols=num_cols,
-            cat_cols=self.actual_cat_cols,
+            cat_cols=self.actual_cat_cols, #使用处理过的分类列
             num_transform_method=data_config.num_transform_method,
             random_state=data_config.random_state,
         )
-        self.data_processor.fit(df_train_for_proc)
-        df_trans = self.data_processor.transform(df_train_for_proc)
+        self.data_processor.fit(df_train_for_proc) # 仅在训练集上做拟合
+        # 转换训练数据
+        df_train_trans = self.data_processor.transform(df_train_for_proc)
+        train_dataset = TensorDataset(
+            torch.tensor(df_train_trans.values, dtype=torch.float32),
+            y_train_tensor
+        )
+        train_dataloader = DataLoader(train_dataset, batch_size=train_config.batch_size, shuffle=True)
 
+        # 处理验证数据
+        val_dataloader = None
+        if df_val is not None:
+            # 使用与训练数据相同的路由规则处理验证数据
+            df_val_for_proc, _, y_val_tensor = \
+                self._route_training_data(df_val, target_col, cat_cols)
+            # 使用“已拟合的”处理器转换验证数据
+            df_val_trans = self.data_processor.transform(df_val_for_proc)
+            val_dataset = TensorDataset(
+                torch.tensor(df_val_trans.values, dtype=torch.float32),
+                y_val_tensor
+            )
+            val_dataloader = DataLoader(val_dataset, batch_size=train_config.batch_size, shuffle=False) # 验证集不打乱
+
+        # 模型初始化相关
         self.meta_info = self.data_processor.get_model_info()
         self.num_numerical_features = self.meta_info['num_numerical']
         self.num_classes = self.meta_info['num_classes']
@@ -196,18 +222,23 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         self.true_marginals = []
         cat_start_idx = self.num_numerical_features
 
-        # 确定用哪些行来统计边缘分布
-        if self.train_cfg.task in ('minority_cond', 'minority_uncond'):
-            # 用原始标签筛选少数类进行，再对应到df_trans的索引
-            minority_mask = (df_train_for_proc.index.isin(
-                df_train[df_train[target_col] == 1].index
-            ))
-            df_trans_ref = df_trans[minority_mask]
-        else:
-            df_trans_ref = df_trans # full_data任务用全量
+        # 根据 task 确定用于统计分布边缘的数据
+        if self.train_cfg.task == 'minority_uncond':
+            # 对于minority_uncond, df_train_trans已经只包含少数类样本
+            df_trans_for_marginal_calc = df_train_trans
+        elif self.train_cfg.task == 'minority_cond':
+            # 对于 minority_cond，df_train_trans 包含所有样本。需要过滤出少数类。
+            minority_label = self.target_dist_info['minority_class'] # 从统计信息中获取少数类标签
+            minority_mask_from_y_train = (y_train_tensor == minority_label)
+            df_trans_for_marginal_calc = df_train_trans[minority_mask_from_y_train]
+            if df_trans_for_marginal_calc.empty:
+                print(f"Warning: No samples for minority class (label={minority_label}) found for marginals calculation \
+                      in training data. Marginals might be inaccurate.")
+        else: # full_data_joint, full_data_cond
+            df_trans_for_marginal_calc = df_train_trans # 使用所有转换后的训练数据
 
         for i, n_classes in enumerate(self.num_classes):
-            col_data = df_trans_ref.iloc[:, cat_start_idx + i]
+            col_data = df_trans_for_marginal_calc.iloc[:, cat_start_idx + i]
             val_counts = col_data.value_counts(normalize=True).sort_index()
             marginal = torch.zeros(n_classes)
             for k, v in val_counts.items():
@@ -227,13 +258,8 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
             dropout=self.cfg.dropout,
         ).to(self.device)
 
-        dataset = TensorDataset(
-            torch.tensor(df_trans.values, dtype=torch.float32),
-            y_train_tensor,
-        )
-        dataloader = DataLoader(dataset, batch_size=train_config.batch_size, shuffle=True)
-
-        train_loop(self, dataloader, train_config)
+        # --- 将 train_dataloader 和val_dataloader 传递给 train_loop ---
+        train_loop(self, train_dataloader, val_dataloader, train_config)
 
         return self
 
