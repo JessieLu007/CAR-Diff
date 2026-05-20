@@ -13,7 +13,7 @@
 
     "framingham": {
         "categorical": ["male", "education", "currentSmoker", "cigsPerDay", "BPMeds", "prevalentStroke", "prevalentHyp", "diabetes"],
-        "numerical":["age", "totChol", "sysBP", "diaBP", "BMI", "heartRate", "glucose"],
+        "numerical":["age", "cigsPerDay", "totChol", "sysBP", "diaBP", "BMI", "heartRate", "glucose"],
         "target":"label"
     },
 

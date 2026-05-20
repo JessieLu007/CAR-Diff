@@ -232,7 +232,7 @@ class TabMLPDenoise(nn.Module):
     def _apply_prior_initialization(self, true_marginals):
         with torch.no_grad():
             for i, head in enumerate(self.out_cat):
-                prior     = true_marginals[i].cpu()
+                prior     = true_marginals[i]
                 log_prior = torch.log(prior + 1e-8)
                 head.bias.copy_(log_prior)
                 head.weight.data.mul_(0.1)
