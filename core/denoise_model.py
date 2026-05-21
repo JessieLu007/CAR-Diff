@@ -141,11 +141,11 @@ class TabMLPDenoise(nn.Module):
         self.cat_dropout = nn.Dropout(0.2)
         if len(self.num_classes) > 0:
             self.cat_embed_layers = nn.ModuleList([
-                nn.Embedding(c, min(16, c * 2)) for c in self.num_classes
+                nn.Embedding(c, min(16, c * 4)) for c in self.num_classes
             ])
             self.cat_col_projs = nn.ModuleList([
                 nn.Sequential(
-                    nn.Linear(min(16, c * 2), dim_hidden),
+                    nn.Linear(min(16, c * 4), dim_hidden),
                     nn.SiLU(),
                     nn.LayerNorm(dim_hidden),
                 )
@@ -250,9 +250,24 @@ class TabMLPDenoise(nn.Module):
         y_raw_emb = self.label_emb(y.squeeze().long())
         emb       = t_emb + y_raw_emb          # [B, dim_t]，用于 AdaLN
 
+        '''print("\n====== DEBUG x_cat ======")
+        print("before_long")
+        print(x_in[:, self.num_numerical:][:5])
+        print("after long")
+        print(x_in[:, self.num_numerical:].long()[:5])
+        print("========================\n")
+
+        print(self.num_classes)
+        print(len(self.num_classes))
+        print(sum(self.num_classes))
+
+        print(x_in[:, self.num_numerical:].shape)'''
+
         # ── 拆分输入 ─────────────────────────────────────────────────
         x_num = x_in[:, :self.num_numerical]                   # [B, N_num]
-        x_cat = x_in[:, self.num_numerical:].long()            # [B, N_cat]
+        x_cat_prob = x_in[:, self.num_numerical:]
+        #x_cat = x_in[:, self.num_numerical:].long()            # [B, N_cat]
+        
 
         # ── 改进 2：逐列 Token 化 ─────────────────────────────────────
         num_tokens, cat_tokens = [], []
@@ -261,12 +276,32 @@ class TabMLPDenoise(nn.Module):
             for i, enc in enumerate(self.num_col_encoders):
                 num_tokens.append(enc(x_num[:, i]))            # [B, D]
 
-        if self.cat_embed_layers is not None:
+        start = 0
+        for emb_layer, proj, n_class in zip(
+            self.cat_embed_layers,
+            self.cat_col_projs,
+            self.num_classes):
+
+            end = start + n_class
+            prob = x_cat_prob[:, start:end]
+            
+            assert prob.shape[1] == n_class
+
+            emb_weight = emb_layer.weight
+            tok = prob @ emb_weight
+            tok = proj(tok)
+
+            cat_tokens.append(
+                self.cat_dropout(tok)
+            )
+            start = end
+
+        '''if self.cat_embed_layers is not None:
             for i, (emb_layer, proj) in enumerate(
                 zip(self.cat_embed_layers, self.cat_col_projs)
             ):
                 tok = proj(emb_layer(x_cat[:, i]))             # [B, D]
-                cat_tokens.append(self.cat_dropout(tok))
+                cat_tokens.append(self.cat_dropout(tok))'''
 
         # ── 改进 3：Cross-Attention（数值 Query 类别 KV）────────────────
         # 在 Token 化完成后、拼接前对数值 Token 做跨模态增强

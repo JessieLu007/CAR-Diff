@@ -138,7 +138,7 @@ class TabularDataProcessor:
             elif self.num_transform_method == 'standard':
                 encoder = StandardScaler()
             elif self.num_transform_method == 'minmax':
-                encoder = MinMaxScaler(feature_range=(-1, 1))
+                encoder = MinMaxScaler()
             else:
                 encoder = None  # 'none'：直接透传
 
