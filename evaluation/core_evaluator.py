@@ -87,7 +87,12 @@ class TabularEvaluator:
 
         ks_list = []
         for c in self.num_cols:
-            real_c = self.X_real_train_raw[c].dropna()
+            if self.ml_mode == 'augmentation':
+                mask = self.y_real_train == 1
+                X_minority = self.X_real_train_raw[mask]
+                real_c = X_minority[c].dropna()
+            else:
+                real_c = self.X_real_train_raw[c].dropna()
             fake_c = self.X_fake_raw[c].dropna()
             if len(real_c) > 0 and len(fake_c) > 0:
                 stat, _ = ks_2samp(real_c, fake_c)
@@ -95,7 +100,7 @@ class TabularEvaluator:
             else:
                 ks_list.append(1.0)
 
-        results['Avg_KL_Distance'] = np.mean(ks_list) if ks_list else 0.0
+        results['Avg_KS_Distance'] = np.mean(ks_list) if ks_list else 0.0
 
         if len(self.num_cols) > 1:
             real_corr = self.X_real_train_raw[self.num_cols].corr(method='pearson').fillna(0).values
@@ -231,36 +236,8 @@ class TabularEvaluator:
                 })
 
         return pd.DataFrame(records).set_index(['Feature', 'Category'])
-    '''
-    def evaluate_categorical_proportions(self) -> pd.DataFrame:
-        """
-        输出各类别特征在真实训练集与合成集中的占比对比
-        :return: 以MultiIndex(feature, category)为索引的DataFrame
-        """
-        cols = list(self.cat_cols)
-        
-        if self.ml_mode == 'tstr':
-            cols.append(self.target_col)
+    
 
-        records = []
-        for col in cols:
-            if col == self.target_col:
-                real_prob = self.y_real_train.value_counts(normalize=True) * 100
-                fake_prob = self.y_fake.value_counts(normalize=True) * 100
-            else:
-                real_prob = self.X_real_train_raw[col].value_counts(normalize=True) * 100
-                fake_prob = self.X_fake_raw[col].value_counts(normalize=True) * 100
-            all_cats = real_prob.index.union(fake_prob.index)
-            for cat in all_cats:
-                records.append({
-                    'Feature': col,
-                    'Category': cat,
-                    'Real_Train(%)': round(real_prob.get(cat, 0.0), 2),
-                    'Fake(%)': round(fake_prob.get(cat, 0.0), 2),
-                })
-        
-        return pd.DataFrame(records).set_index(['Feature', 'Category'])
-    '''
     # ---------- 5. 打印分类结果 ----------
     def _print_ml_table(self, ml_results: dict):
         """

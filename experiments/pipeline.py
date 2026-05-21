@@ -16,6 +16,18 @@ from experiments.synthesizers import MedSynth
 from evaluation.tool_stability import StabilityEvaluator
 
 
+class Tee:
+    def __init__(self, *files):
+        self.files = files
+    def write(self, obj):
+        for f in self.files:
+            f.write(obj)
+            f.flush()
+    def flush(self):
+        for f in self.files:
+            f.flush()
+
+
 # =========================================================
 # 主实验 Pipeline
 # =========================================================
@@ -67,8 +79,12 @@ def run_pipeline(
     # =====================================================
     log_path = os.path.join(save_path, "console_output.txt")
 
+    from contextlib import redirect_stdout
+    import sys
+
     with open(log_path, 'w', encoding='utf-8', buffering=1) as log_f:
-        with redirect_stdout(log_f):
+        tee = Tee(sys.stdout, log_f) # 同时写入控制台和文件
+        with redirect_stdout(tee):
 
             print("=" * 60)
             print("🚀 开始实验")
@@ -106,12 +122,28 @@ def run_pipeline(
             print(f"测试集: {len(df_test)}")
 
             # =====================================================
+            # 数据路由：根据 task 决定送入 fit 的数据
+            # =====================================================
+            if task in ("minority_uncond", "minority_cond"):
+                minority_label = 1 #df_train[target_col].value_counts().idxmin()
+                df_train_ref = df_train[df_train[target_col] == minority_label].copy()
+                df_val_ref   = df_val[df_val[target_col] == minority_label].copy()
+                print(f"\n⚙️  Task={task}，仅使用少数类训练")
+                print(f"   少数类标签: {minority_label}")
+                print(f"   训练集少数类样本数: {len(df_train_ref)}")
+                print(f"   验证集少数类样本数: {len(df_val_ref)}")
+            else:
+                df_train_ref = df_train
+                df_val_ref   = df_val
+
+
+            # =====================================================
             # 模型训练
             # =====================================================
             print("\n⏳ 开始训练模型...")
             train_start = time.time()
 
-            synthesizer.fit(df_train, df_val=df_val)
+            synthesizer.fit(df_train_ref, df_val=df_val_ref)
 
             train_time = time.time() - train_start
             print(f"✅ 训练完成 | 用时: {train_time / 60:.2f} min")

@@ -14,7 +14,6 @@ evaluation 包统一入口
     tool_compare.py    — 跨实验对比工具
 """
 from evaluation.core_evaluator import TabularEvaluator
-from evaluation.cv_runner import CrossValidationEvaluator
 from evaluation.tool_stability import StabilityEvaluator
 from evaluation.utils import infer_ml_mode_from_task
 from evaluation.tool_compare import compare_experiments, save_comparison

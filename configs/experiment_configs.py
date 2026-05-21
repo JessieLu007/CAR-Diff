@@ -19,11 +19,14 @@ class PipelineConfig:
 @dataclass
 class ModelConfig:
     """网络架构参数"""
-    dim_t: int = 128
+    dim_t: int = 256
     dim_hidden: int = 512
     num_layers: int = 3
     dropout: float = 0.1
     num_timesteps: int = 1000
+
+    # 控制模型prediction模式
+    prediction_type: str = 'eps' # 默认eps,可切换为x0,此时直接预测x0而非噪声epsilon
 
     # 损失组件
     use_adaptive_focal: bool = True     # 是否使用抵抗饥饿的自适应 Focal Loss
@@ -44,12 +47,12 @@ class ModelConfig:
 @dataclass
 class TrainingConfig:
     """训练数据范围与建模范式控制"""
-    batch_size: int = 512
+    batch_size: int = 256
     epochs: int = 1000
     lr: float = 1e-4
     uncond_p: float = 0.1   # CFG 空条件丢弃率（仅 *_cond 范式生效）
     patience: int = 20
-    use_normal_reg = True
+    use_normal_reg = False
     use_basic = True # 在计算分类属性损失时，是否启用focal_loss, use_basic=True时使用简单的CE，不使用focal_loss
 
     # ------------------------------------------------------------------

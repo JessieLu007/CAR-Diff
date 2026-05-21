@@ -58,7 +58,8 @@ class LossHistory:
         ax = axes[0]
         ax.plot(epochs, self.train_total, color='#2c7bb6', linewidth=1.5, label='Total Loss')
         if self.val_total: # 如果有验证损失，则绘制
-            ax.plot(epochs, self.val_total, color='#ff7f0e', linewidth=1.5, linestyle='--', label='Validation Total Loss')
+            val_epochs = list(range(1, len(self.val_total) + 1))
+            ax.plot(val_epochs, self.val_total, color='#ff7f0e', linewidth=1.5, linestyle='--', label='Validation Total Loss')
         
         # 指示最佳 epoch （基于监控损失）
         ax.axvline(self.best_epoch + 1, color='#d7191c', linestyle='--',
@@ -71,8 +72,8 @@ class LossHistory:
  
         # 右图：num / cat 分量
         ax = axes[1]
-        ax.plot(epochs, self.num, color='#1a9641', linewidth=1.2, label='Numerical Loss')
-        ax.plot(epochs, self.cat, color='#fdae61', linewidth=1.2, label='Categorical Loss')
+        ax.plot(epochs, self.train_num, color='#1a9641', linewidth=1.2, label='Numerical Loss')
+        ax.plot(epochs, self.train_cat, color='#fdae61', linewidth=1.2, label='Categorical Loss')
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Loss')
         ax.set_title('Numerical vs Categorical Loss')
@@ -113,7 +114,10 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg):
       - 每 50 epoch 打印 num/cat 分量
       - 基于验证损失的早停和最佳模型保存
     """
-    optimizer = torch.optim.AdamW(model._denoise_fn.parameters(), lr=train_cfg.lr, weight_decay=1e-5)
+    optimizer = torch.optim.AdamW(
+        list(model._denoise_fn.parameters()) + [model.log_vars], 
+        lr=train_cfg.lr, 
+        weight_decay=1e-5)
 
     """ den = model._denoise_fn
     

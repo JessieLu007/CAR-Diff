@@ -220,6 +220,10 @@ class TabMLPDenoise(nn.Module):
         # ── 8. 输出头 ────────────────────────────────────────────────
         if self.num_numerical > 0:
             self.out_num = nn.Linear(dim_hidden, self.num_numerical)
+            '''self.out_num = nn.Sequential(
+                nn.Linear(dim_hidden, self.num_numerical),
+                nn.Tanh(),
+            )'''
 
         self.out_cat = nn.ModuleList([
             nn.Linear(dim_hidden, c) for c in self.num_classes
