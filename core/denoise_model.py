@@ -219,14 +219,19 @@ class TabMLPDenoise(nn.Module):
 
         # ── 8. 输出头 ────────────────────────────────────────────────
         if self.num_numerical > 0:
-            self.out_num = nn.Linear(dim_hidden, self.num_numerical)
-            '''self.out_num = nn.Sequential(
-                nn.Linear(dim_hidden, self.num_numerical),
-                nn.Tanh(),
-            )'''
+            #self.out_num = nn.Linear(dim_hidden, self.num_numerical)
+            self.out_num = nn.Sequential(
+                nn.Linear(dim_hidden, dim_hidden),
+                nn.SiLU(),
+                nn.Linear(dim_hidden, self.num_numerical)
+            )
 
         self.out_cat = nn.ModuleList([
-            nn.Linear(dim_hidden, c) for c in self.num_classes
+            nn.Sequential(
+                nn.Linear(dim_hidden, dim_hidden),
+                nn.SiLU(),
+                nn.Linear(dim_hidden, c)
+            ) for c in self.num_classes
         ])
 
         if true_marginals is not None:
@@ -238,8 +243,8 @@ class TabMLPDenoise(nn.Module):
             for i, head in enumerate(self.out_cat):
                 prior     = true_marginals[i]
                 log_prior = torch.log(prior + 1e-8)
-                head.bias.copy_(log_prior)
-                head.weight.data.mul_(0.1)
+                head[-1].bias.copy_(log_prior)
+                head[-1].weight.data.mul_(0.1)
 
     # ────────────────────────────────────────────────────────────────
     def forward(self, x_in: torch.Tensor, timesteps: torch.Tensor, y: torch.Tensor):

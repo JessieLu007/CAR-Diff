@@ -143,7 +143,7 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
 
         x_num_latent = raw[:, :self.num_numerical_features].cpu().numpy()
 
-        print(np.percentile(x_num_latent, [0, 1, 5, 50, 95, 99, 100], axis=0))
+        #print(np.percentile(x_num_latent, [0, 1, 5, 50, 95, 99, 100], axis=0))
 
         self._denoise_fn.train()
 
@@ -194,11 +194,13 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         loss_cat = compute_categorical_loss(self, x_cat, model_out, use_basic=self.train_cfg.use_basic)
 
         # 使用不确定性加权公式：Loss = (1 / e^log_var) * L + log_var
-        prec_num = torch.exp(-self.log_vars[0])
-        prec_cat = torch.exp(-self.log_vars[1])
+        #prec_num = torch.exp(-self.log_vars[0])
+        #prec_cat = torch.exp(-self.log_vars[1])
 
-        total_loss = (prec_num * loss_num + self.log_vars[0]) + \
-                     (prec_cat * loss_cat + self.log_vars[1])
+        #total_loss = (prec_num * loss_num + self.log_vars[0]) + \
+        #             (prec_cat * loss_cat + self.log_vars[1])
+
+        total_loss = loss_num + loss_cat
 
         return total_loss, loss_num, loss_cat, loss_corr
 
