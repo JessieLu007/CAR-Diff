@@ -30,13 +30,10 @@ class LossHistory:
         self.train_cat.append(train_cat)
         if val_total is not None:
             self.val_total.append(val_total)
-            current_monitor_loss = val_total
-        else:# 若没有验证集，则使用训练损失作为监控损失
-            current_monitor_loss = train_total
 
-        if current_monitor_loss < self.best_monitor_loss:
-            self.best_monitor_loss = current_monitor_loss
-            self.best_epoch = epoch
+    def set_best(self, epoch: int, monitor_loss: float):
+        self.best_epoch = epoch
+        self.best_monitor_loss = monitor_loss
  
     def plot(self, save_path: str | None = None, show: bool = False):
         """
@@ -118,25 +115,16 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg):
         list(model._denoise_fn.parameters()) + [model.log_vars], 
         lr=train_cfg.lr, 
         weight_decay=1e-5)
-
-    """ den = model._denoise_fn
     
-    optimizer = torch.optim.AdamW(
-        [
-            {'params': den.time_embed.parameters(),  'lr': train_cfg.lr},
-            {'params': den.label_emb.parameters(),   'lr': train_cfg.lr},
-            # input projection
-            {'params': den.proj_num.parameters(), 'lr': train_cfg.lr},
-            {'params': den.proj_cat.parameters(), 'lr': train_cfg.lr},
-            {'params': den.proj_fuse.parameters(), 'lr': train_cfg.lr},
-            # backbone
-            {'params': den.layers.parameters(),      'lr': train_cfg.lr},
-            # output
-            {'params': den.out_num.parameters(),     'lr': train_cfg.lr},
-            {'params': den.out_cat.parameters(),     'lr': train_cfg.lr * 1.0},
-        ],
-        weight_decay=1e-4,
-    ) """
+    val_size = sum(len(b[0]) for b in val_dataloader) if val_dataloader else 0
+    USE_VAL_MONITOR = val_size >=200 # 样本太少就不用验证集监控
+
+    if not USE_VAL_MONITOR and val_dataloader is not None:
+        print(f"⚠️  验证集仅 {val_size} 条，退化为训练损失监控（EMA平滑）")
+
+    EMA_ALPHA = 0.1 # 越小越平滑，<100的样本可以设置为0.05-0.1附近
+    ema_monitor_loss = None
+
 
     # 挂载 loss历史到model， 方便外部访问
     history = LossHistory()
@@ -232,18 +220,24 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg):
         history.append(avg_train_loss, avg_train_num, avg_train_cat, avg_val_loss, epoch)
 
         # ----- 早期停止逻辑 (现在基于验证损失，若无则退化为训练损失) -----
-        current_monitor_loss = avg_val_loss if avg_val_loss is not None else avg_train_loss
+        raw_monitor = avg_val_loss if (USE_VAL_MONITOR and avg_val_loss is not None) else avg_train_loss
 
-        if current_monitor_loss < best_monitor_loss - 1e-4: # 引入一个小的余量，避免过于敏感
+        if ema_monitor_loss is None:
+            ema_monitor_loss = raw_monitor
+        else:
+            ema_monitor_loss = EMA_ALPHA * raw_monitor + (1 - EMA_ALPHA) * ema_monitor_loss
+
+        current_monitor_loss = ema_monitor_loss
+
+        MIN_RELATIVE_IMPROVEMENT = 0.001 # 
+        if current_monitor_loss < best_monitor_loss: #* (1- MIN_RELATIVE_IMPROVEMENT): # 引入一个小的余量，避免过于敏感
             best_monitor_loss = current_monitor_loss
-            best_epoch_current_run = epoch # 记录当前运行中的最佳 epoch
             # 保存 denoise_fn的状态字典，而不是整个模型
             best_state = {k: v.cpu().clone() for k, v in model._denoise_fn.state_dict().items()}
+            history.set_best(epoch, best_monitor_loss)
             patience_counter = 0
-            #print(f"  --> 监控损失改善！保存最佳模型. ({best_monitor_loss:.4f})")
         else:
             patience_counter += 1
-            #print(f"  --> 监控损失未改善 ({current_monitor_loss:.4f}). Patience: {patience_counter}/{train_cfg.patience}")
         
         # ----- 定期打印 -----
         if (epoch + 1) % 50 == 0 or epoch == 0:
@@ -255,7 +249,8 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg):
             if avg_val_loss is not None:
                 log_str += f" | Val Tot: {avg_val_loss:.4f}"
             log_str += (
-                f" | Monitor Loss: {current_monitor_loss:.4f} "
+                f" | Monitor(EMA): {current_monitor_loss:.4f} " # EMA值
+                f" | Raw: {raw_monitor: .4f}"  # 原始值
                 f"| Best Mon: {best_monitor_loss:.4f} "
                 f"| Patience: {patience_counter}/{train_cfg.patience}"
             )

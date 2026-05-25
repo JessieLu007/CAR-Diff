@@ -270,7 +270,7 @@ class TabMLPDenoise(nn.Module):
 
         # ── 拆分输入 ─────────────────────────────────────────────────
         x_num = x_in[:, :self.num_numerical]                   # [B, N_num]
-        x_cat_prob = x_in[:, self.num_numerical:]
+        x_cat_prob = x_in[:, self.num_numerical:].long()
         #x_cat = x_in[:, self.num_numerical:].long()            # [B, N_cat]
         
 
@@ -293,7 +293,7 @@ class TabMLPDenoise(nn.Module):
             assert prob.shape[1] == n_class
 
             emb_weight = emb_layer.weight
-            tok = prob @ emb_weight
+            tok = prob.float() @ emb_weight
             tok = proj(tok)
 
             cat_tokens.append(

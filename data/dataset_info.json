@@ -1,18 +1,18 @@
 {
     "breast_cancer": {
         "categorical": [],
-        "numerical":["age", "BMI", "Glucose", "Insulin", "HOMA", "Leptin", "Adiponectin", "Resistin", "MCP.1"],
+        "numerical":["Age", "BMI", "Glucose", "Insulin", "HOMA", "Leptin", "Adiponectin", "Resistin", "MCP.1"],
         "target":"label"
     },
 
     "diabetes_risk": {
-        "categorical": ["Gender", "Polyuria", "Polydipsia", "sudden weight", "weakness", "Polyphagia", "Genital thrush", "visual blurring", "Itching", "Irritability", "delayed healing", "partial paresis", "muscle stiffness", "Alopecia", "Obesity"],
+        "categorical": ["Gender", "Polyuria", "Polydipsia", "sudden weight loss", "weakness", "Polyphagia", "Genital thrush", "visual blurring", "Itching", "Irritability", "delayed healing", "partial paresis", "muscle stiffness", "Alopecia", "Obesity"],
         "numerical":["Age"],
         "target":"label"
     },
 
     "framingham": {
-        "categorical": ["male", "education", "currentSmoker", "cigsPerDay", "BPMeds", "prevalentStroke", "prevalentHyp", "diabetes"],
+        "categorical": ["male", "education", "currentSmoker", "BPMeds", "prevalentStroke", "prevalentHyp", "diabetes"],
         "numerical":["age", "cigsPerDay", "totChol", "sysBP", "diaBP", "BMI", "heartRate", "glucose"],
         "target":"label"
     },
@@ -33,7 +33,7 @@
 
     "tcga": {
         "categorical": ["Gender", "Race", "IDH1", "TP53", "ATRX", "PTEN", "EGFR", "CIC","MUC16",
-    "PIK3CA", "NF1", "PIK3R1", "FUBP1", "RB1", "NOTCH1","CSMD3", "SMARCA4", "GRIN2A", "IDH2", "FAT4", "PDGFRA"],
+    "PIK3CA", "NF1", "PIK3R1", "FUBP1", "RB1", "NOTCH1","BCOR", "CSMD3", "SMARCA4", "GRIN2A", "IDH2", "FAT4", "PDGFRA"],
         "numerical":["Age_at_diagnosis"],
         "target":"label"
     },

@@ -253,6 +253,7 @@ def compute_categorical_loss(
     for i, ix in enumerate(slices_for_classes):
         logits     = model_cat_out[:, ix]                        # [B, C_i]
         targets    = x_cat[:, i]                                 # [B]
+        #print(targets.unique())
         prior      = true_marginals[i]                           # [C_i]
         ema_m      = marginal_tracker[i] if marginal_tracker is not None else None
 

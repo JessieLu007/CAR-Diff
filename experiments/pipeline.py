@@ -85,13 +85,10 @@ def run_pipeline(
     with open(log_path, 'w', encoding='utf-8', buffering=1) as log_f:
         tee = Tee(sys.stdout, log_f) # 同时写入控制台和文件
         with redirect_stdout(tee):
-
             print("=" * 60)
             print("🚀 开始实验")
             print(f"📁 保存目录: {save_path}")
             print("=" * 60)
-            print("\n📌 实验配置:")
-            print(exp_cfg)
 
             # =====================================================
             # 数据划分
@@ -116,10 +113,7 @@ def run_pipeline(
                 random_state=exp_cfg.pipeline.random_state,
             )
 
-            print("\n📊 数据划分:")
-            print(f"训练集: {len(df_train)}")
-            print(f"验证集: {len(df_val)}")
-            print(f"测试集: {len(df_test)}")
+            print(f"\n📊 数据划分: 训练集: {len(df_train)}  验证集: {len(df_val)}  测试集: {len(df_test)}")
 
             # =====================================================
             # 数据路由：根据 task 决定送入 fit 的数据
@@ -128,10 +122,7 @@ def run_pipeline(
                 minority_label = 1 #df_train[target_col].value_counts().idxmin()
                 df_train_ref = df_train[df_train[target_col] == minority_label].copy()
                 df_val_ref   = df_val[df_val[target_col] == minority_label].copy()
-                print(f"\n⚙️  Task={task}，仅使用少数类训练")
-                print(f"   少数类标签: {minority_label}")
-                print(f"   训练集少数类样本数: {len(df_train_ref)}")
-                print(f"   验证集少数类样本数: {len(df_val_ref)}")
+                print(f"\n⚙️  Task={task}，仅使用少数类训练   少数类标签: {minority_label}   训练集少数类样本数: {len(df_train_ref)}   验证集少数类样本数: {len(df_val_ref)}")
             else:
                 df_train_ref = df_train
                 df_val_ref   = df_val
@@ -140,7 +131,7 @@ def run_pipeline(
             # =====================================================
             # 模型训练
             # =====================================================
-            print("\n⏳ 开始训练模型...")
+            print("⏳ 开始训练模型...")
             train_start = time.time()
 
             synthesizer.fit(df_train_ref, df_val=df_val_ref)
@@ -156,7 +147,7 @@ def run_pipeline(
             # =====================================================
             # 生成插补后可读数据集（与训练预处理完全一致）
             # =====================================================
-            print("\n🔧 生成插补后参考数据集...")
+            print("🔧 生成插补后参考数据集...")
 
             df_train_imputed = synthesizer.transform_readable(df_train)
             df_val_imputed   = synthesizer.transform_readable(df_val)
@@ -165,7 +156,6 @@ def run_pipeline(
             # =====================================================
             # 生成合成数据
             # =====================================================
-            print("\n🎲 开始生成数据...")
             sample_start = time.time()
 
             global_minority_class = df_all[target_col].value_counts().idxmin()
@@ -178,7 +168,7 @@ def run_pipeline(
             # =====================================================
             # 保存 Loss History
             # =====================================================
-            print("\n💾 保存 Loss History...")
+            print("💾 保存 Loss History...")
 
             loss_history = synthesizer.loss_history   # 通过属性代理访问，不穿透到 diffusion
             loss_df = pd.DataFrame({
@@ -209,7 +199,7 @@ def run_pipeline(
             # =====================================================
             # 保存 CSV
             # =====================================================
-            print("\n💾 保存数据文件...")
+            print("💾 保存数据文件...")
 
             df_train.to_csv(os.path.join(save_path, "real_train.csv"),                 index=False)
             df_val.to_csv(  os.path.join(save_path, "real_val.csv"),                   index=False)
@@ -243,8 +233,7 @@ def run_pipeline(
             # =====================================================
             total_time = time.time() - start_time
             print("\n" + "=" * 60)
-            print("✅ 实验完成")
-            print(f"🕒 Total Time: {total_time / 60:.2f} min")
+            print(f"✅ 实验完成     🕒 Total Time: {total_time / 60:.2f} min")
             print("=" * 60, flush=True)
 
             # =====================================================

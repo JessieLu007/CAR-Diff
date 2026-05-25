@@ -167,11 +167,7 @@ class MedSynth:
         )
 
         print(
-            f"\n🎲 开始生成:"
-            f"\n   task={self.t_cfg.task}"
-            f"\n   objective={self.t_cfg.objective}"
-            f"\n   target_class={target_class}"
-            f"\n   n_samples={n_samples}"
+            f"\n🎲 开始生成:   task={self.t_cfg.task}   objective={self.t_cfg.objective}   target_class={target_class}   n_samples={n_samples}"
         )
 
         temp_cfg = replace(self.s_cfg, num_samples=n_samples)

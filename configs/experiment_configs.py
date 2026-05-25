@@ -52,8 +52,8 @@ class TrainingConfig:
     lr: float = 1e-4
     uncond_p: float = 0.1   # CFG 空条件丢弃率（仅 *_cond 范式生效）
     patience: int = 20
-    use_normal_reg = False
-    use_basic = True # 在计算分类属性损失时，是否启用focal_loss, use_basic=True时使用简单的CE，不使用focal_loss
+    use_normal_reg: bool = False
+    use_basic: bool = True # 在计算分类属性损失时，是否启用focal_loss, use_basic=True时使用简单的CE，不使用focal_loss
 
     # ------------------------------------------------------------------
     # task：训练范式，调用方始终传入全量数据，内部自动路由

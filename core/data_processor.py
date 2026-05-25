@@ -1,7 +1,7 @@
 # core/data_processor.py
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import LabelEncoder, QuantileTransformer, StandardScaler, MinMaxScaler
+from sklearn.preprocessing import OrdinalEncoder, QuantileTransformer, StandardScaler, MinMaxScaler
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import IterativeImputer
 
@@ -96,18 +96,22 @@ class TabularDataProcessor:
 
         # ---------- 类别特征 ----------
         for col in self.cat_cols:
-            series = df[col]
-            encoder = LabelEncoder()
-            encoder.fit(series.dropna().astype(str))
+            series = df[col].astype(str)
+            encoder = OrdinalEncoder(
+                handle_unknown="use_encoded_value",
+                unknown_value=-1,
+                dtype=int
+            )
+            encoder.fit(series.dropna().values.reshape(-1, 1))
             self.meta[col] = {
                 'type': 'cat',
                 'encoder': encoder,
-                'classes': len(encoder.classes_),
+                'classes': len(encoder.categories_[0]),
             }
 
             # 内部编码， 仅供 MICE 使用
             encoded_series = series.apply(
-                lambda x: encoder.transform([str(x)])[0] if pd.notna(x) else np.nan
+                lambda x: encoder.transform([[x]])[0, 0] if pd.notna(x) else np.nan
             )
             df_temp[col] = encoded_series
 
@@ -184,7 +188,7 @@ class TabularDataProcessor:
         for col in self.cat_cols:
             enc = self.meta[col]['encoder']
             df_temp[col] = df[col].apply(
-                lambda x: enc.transform([str(x)])[0] if pd.notna(x) else np.nan
+                lambda x: enc.transform([[str(x)]])[0, 0] if pd.notna(x) else np.nan
             )
         for col in self.num_cols:
             df_temp[col] = df[col]
@@ -244,7 +248,7 @@ class TabularDataProcessor:
         for col in self.cat_cols:
             enc = self.meta[col]['encoder']
             df_temp[col] = df[col].apply(
-                lambda x: enc.transform([str(x)])[0] if pd.notna(x) else np.nan
+                lambda x: enc.transform([[str(x)]])[0,0] if pd.notna(x) else np.nan
             )
         for col in self.num_cols:
             df_temp[col] = df[col]
@@ -279,9 +283,9 @@ class TabularDataProcessor:
 
         for col in self.cat_cols:
             raw = df_imputed[col].values
-            raw = np.where(np.isnan(raw), 0.0, np.round(raw))
-            vals = np.clip(raw.astype(int), 0, self.meta[col]['classes'] - 1)
-            labels = self.meta[col]['encoder'].inverse_transform(vals)
+            vals = np.where(raw == -1, 0, raw) 
+            vals = np.clip(vals.astype(int), 0, self.meta[col]['classes'] - 1)
+            labels = self.meta[col]['encoder'].inverse_transform(vals.reshape(-1, 1)).flatten()
             try:
                 df_out[col] = pd.to_numeric(labels)
             except ValueError:
@@ -338,10 +342,11 @@ class TabularDataProcessor:
             if series.dtype == object:
                 df_out[col] = series
                 continue
+
             raw = df[col].values
-            raw = np.where(np.isnan(raw), 0.0, np.round(raw))
-            vals = np.clip(raw.astype(int), 0, self.meta[col]['classes'] - 1)
-            labels = self.meta[col]['encoder'].inverse_transform(vals)
+            vals = np.where(raw == -1, 0, raw)
+            vals = np.clip(vals.astype(int), 0, self.meta[col]['classes'] - 1)
+            labels = self.meta[col]['encoder'].inverse_transform(vals.reshape(-1, 1)).flatten()
             try:
                 df_out[col] = pd.to_numeric(labels)
             except ValueError:

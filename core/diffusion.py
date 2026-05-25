@@ -170,7 +170,13 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
             y_cond[drop_mask] = self.cfg.null_class_idx
 
         x_num = batch_x[:, :self.num_numerical_features].float()
+
         x_cat = batch_x[:, self.num_numerical_features:].long()
+
+        '''print("shape =", x_cat.shape)
+        print("dtype =", x_cat.dtype)
+        print("min =", x_cat.min())
+        print("max =", x_cat.max())'''
 
         noise = torch.randn_like(x_num)
         x_num_t = (
@@ -194,13 +200,13 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         loss_cat = compute_categorical_loss(self, x_cat, model_out, use_basic=self.train_cfg.use_basic)
 
         # 使用不确定性加权公式：Loss = (1 / e^log_var) * L + log_var
-        #prec_num = torch.exp(-self.log_vars[0])
-        #prec_cat = torch.exp(-self.log_vars[1])
+        prec_num = torch.exp(-self.log_vars[0])
+        prec_cat = torch.exp(-self.log_vars[1])
 
-        #total_loss = (prec_num * loss_num + self.log_vars[0]) + \
-        #             (prec_cat * loss_cat + self.log_vars[1])
+        total_loss = (prec_num * loss_num + self.log_vars[0]) + \
+                     (prec_cat * loss_cat + self.log_vars[1])
 
-        total_loss = loss_num + loss_cat
+        #total_loss = loss_num + loss_cat
 
         return total_loss, loss_num, loss_cat, loss_corr
 
