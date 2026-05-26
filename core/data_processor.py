@@ -1,7 +1,7 @@
 # core/data_processor.py
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import OrdinalEncoder, QuantileTransformer, StandardScaler, MinMaxScaler
+from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, QuantileTransformer, StandardScaler, MinMaxScaler
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import IterativeImputer
 
@@ -14,6 +14,11 @@ class TabularDataProcessor:
         'quantile' : QuantileTransformer → 正态分布（默认，配合标准 MLP 使用）
         'standard' : StandardScaler → 零均值单位方差
         'none'     : 不做分布变换，保留原始数值（配合 Periodic Embedding 使用）
+
+    cat_encoding_method:
+        'label'   : LabelEncoder → 整数编码（不处理未知类别）
+        'ordinal' : OrdinalEncoder → 整数编码（未知类别 → NaN → MICE 插补）
+        'none'    : 逆变换回原始字符串标签
     """
 
     def __init__(self, num_cols, cat_cols, num_transform_method='quantile', cat_encoding_method='label', random_state=42):
@@ -21,9 +26,8 @@ class TabularDataProcessor:
         assert num_transform_method in ('quantile', 'standard', 'minmax', 'none'), (
             f"num_transform_method 必须是 'quantile'/'standard'/'minmax'/'none'，got '{num_transform_method}'"
         )
-
-        assert cat_encoding_method in ('label', 'none'), (
-            f"cat_encoding_method 必须是 'label'/'none'', got '{cat_encoding_method}'"
+        assert cat_encoding_method in ('label', 'ordinal', 'none'), (
+            f"cat_encoding_method 必须是 'label'/'ordinal'/'none'，got '{cat_encoding_method}'"
         )
 
         self.num_cols = num_cols
@@ -43,13 +47,47 @@ class TabularDataProcessor:
         )
 
     # =========================================================
+    # 类别编码辅助方法（私有）
+    # =========================================================
+    def _cat_encode(self, enc, x_str: str):
+        """将单个字符串值编码为整数，屏蔽 LabelEncoder / OrdinalEncoder 的 API 差异。"""
+        if isinstance(enc, OrdinalEncoder):
+            # OrdinalEncoder.transform 接受二维输入，unknown → -1 → 后续转 NaN
+            return enc.transform([[x_str]])[0, 0]
+        else:
+            # LabelEncoder.transform 接受一维输入
+            return enc.transform([x_str])[0]
+
+    def _cat_inverse_transform(self, col: str, vals_1d: np.ndarray) -> np.ndarray:
+        """将整数数组反编码为原始标签，屏蔽 LabelEncoder / OrdinalEncoder 的维度差异。"""
+        enc = self.meta[col]['encoder']
+        if isinstance(enc, OrdinalEncoder):
+            # OrdinalEncoder.inverse_transform 需要二维输入，输出也是二维
+            return enc.inverse_transform(vals_1d.reshape(-1, 1)).flatten()
+        else:
+            # LabelEncoder.inverse_transform 接受一维输入
+            return enc.inverse_transform(vals_1d)
+
+
+    def _encode_cat_series_for_mice(self, col: str, series: pd.Series) -> pd.Series:
+        """
+        将类别列编码为浮点整数供 MICE 使用。
+        关键：OrdinalEncoder 的 unknown_value=-1 在此统一转为 NaN，
+        确保 MICE 将其视为缺失值而非合法编码。
+        """
+        enc = self.meta[col]['encoder']
+        encoded = series.apply(
+            lambda x: self._cat_encode(enc, str(x)) if pd.notna(x) else np.nan
+        )
+        if isinstance(enc, OrdinalEncoder):
+            # -1 是 unknown_value，对 MICE 而言应当作缺失值
+            encoded = encoded.replace(-1.0, np.nan)
+        return encoded
+
+    # =========================================================
     # 数值结构检测（私有）
     # =========================================================
     def _detect_quantize_step(self, unique_values, candidates=(0.5,), tol=1e-6):
-        """
-        检测最小公共步长,仅用于非整数列
-        候选只保留 0.5：整数列由 is_int 分支处理
-        """
         for q in candidates:
             remainders = np.abs(unique_values % q)
             if np.all(np.minimum(remainders, np.abs(remainders - q)) < tol):
@@ -57,38 +95,39 @@ class TabularDataProcessor:
         return None
 
     def _analyze_numeric_structure(self, values, is_int: bool, tolerance=1e-9):
-        """
-        返回数值列的 quantize_step：
-          - 整数列（is_int=True）：直接返回 None，逆变换时统一用 round+astype(int) 处理
-          - 非整数列：检测是否存在 0.5 步长（半整数列如 sysBP/diaBP）
-          - 连续列：返回 None，仅做精度舍入
-        """
         result = {'step': None, 'quantize_step': None}
-
         if is_int:
             return result
-
         unique = np.sort(np.unique(pd.Series(values).dropna().values))
         if len(unique) <= 1:
             return result
-
         result['quantize_step'] = self._detect_quantize_step(unique)
         return result
 
     @staticmethod
     def _infer_precision(series: pd.Series) -> int:
-        """
-        推断小数位数。用 95 分位数而非众数：
-        众数会被大量整数/一位小数值拉低，导致少数高精度值被过度截断。
-        例如 BMI = [18.4, 22.7, 25.13, ...] 众数=1，25.13 会被 round 成 25.1。
-        95 分位数更保守，上限设为 4（超过 4 位通常是浮点噪声）。
-        """
         sample = series.dropna().sample(min(1000, len(series)))
         decimals = [
             len(f"{v:.10f}".rstrip('0').split('.')[1]) if '.' in f"{v:.10f}".rstrip('0') else 0
             for v in sample
         ]
         return int(min(np.percentile(decimals, 95), 4))
+    
+    # =========================================================
+    # 类别编码辅助方法（私有）
+    # =========================================================
+    def _cat_encode(self, enc, x_str: str):
+        if isinstance(enc, OrdinalEncoder):
+            return enc.transform([[x_str]])[0, 0]
+        else:
+            return enc.transform([x_str])[0]
+
+    def _cat_inverse_transform(self, col: str, vals_1d: np.ndarray) -> np.ndarray:
+        enc = self.meta[col]['encoder']
+        if isinstance(enc, OrdinalEncoder):
+            return enc.inverse_transform(vals_1d.reshape(-1, 1)).flatten()
+        else:
+            return enc.inverse_transform(vals_1d)
 
     # =========================================================
     def fit(self, df: pd.DataFrame):
@@ -96,35 +135,38 @@ class TabularDataProcessor:
 
         # ---------- 类别特征 ----------
         for col in self.cat_cols:
-            series = df[col].astype(str)
-            encoder = OrdinalEncoder(
-                handle_unknown="use_encoded_value",
-                unknown_value=-1,
-                dtype=int
-            )
-            encoder.fit(series.dropna().values.reshape(-1, 1))
+            series_raw = df[col]
+            # Fix: dropna() 在 astype(str) 之前，避免 'nan' 字符串被编入 encoder
+            valid_str = series_raw.dropna().astype(str)
+
+            if self.cat_encoding_method == 'ordinal':
+                encoder = OrdinalEncoder(
+                    handle_unknown="use_encoded_value",
+                    unknown_value=-1,
+                )
+                encoder.fit(valid_str.values.reshape(-1, 1))
+                n_classes = len(encoder.categories_[0])
+            else:
+                encoder = LabelEncoder()
+                encoder.fit(valid_str)
+                n_classes = len(encoder.classes_)
+
             self.meta[col] = {
                 'type': 'cat',
                 'encoder': encoder,
-                'classes': len(encoder.categories_[0]),
+                'classes': n_classes,
             }
 
-            # 内部编码， 仅供 MICE 使用
-            encoded_series = series.apply(
-                lambda x: encoder.transform([[x]])[0, 0] if pd.notna(x) else np.nan
-            )
-            df_temp[col] = encoded_series
+            # Fix: 传入原始 series（含真正的 NaN），由辅助方法内部处理
+            df_temp[col] = self._encode_cat_series_for_mice(col, series_raw)
 
         # ---------- 数值特征 ----------
         for col in self.num_cols:
             valid_data = df[col].dropna()
-
             is_int = bool(np.allclose(valid_data, np.round(valid_data)))
-
             structure = self._analyze_numeric_structure(valid_data, is_int=is_int)
             quantize_step = structure['quantize_step']
 
-            # 精度：优先从 quantize_step 推导，更稳定
             if quantize_step is not None:
                 q_str = f"{quantize_step:.10f}".rstrip('0')
                 prec = len(q_str.split('.')[1]) if '.' in q_str else 0
@@ -132,7 +174,6 @@ class TabularDataProcessor:
                 prec = self._infer_precision(valid_data)
             self.precisions[col] = prec
 
-            # 分布编码器
             if self.num_transform_method == 'quantile':
                 encoder = QuantileTransformer(
                     n_quantiles=min(1000, len(valid_data)),
@@ -144,10 +185,9 @@ class TabularDataProcessor:
             elif self.num_transform_method == 'minmax':
                 encoder = MinMaxScaler()
             else:
-                encoder = None  # 'none'：直接透传
+                encoder = None
 
             value_range = valid_data.max() - valid_data.min()
-
             self.meta[col] = {
                 'type': 'num',
                 'is_int': is_int,
@@ -185,11 +225,9 @@ class TabularDataProcessor:
         ordered_cols = self.num_cols + self.cat_cols
         df_temp = pd.DataFrame(index=df.index)
 
+        # Bug 2 Fix: 统一通过辅助方法编码，OrdinalEncoder unknown → NaN 由辅助方法处理
         for col in self.cat_cols:
-            enc = self.meta[col]['encoder']
-            df_temp[col] = df[col].apply(
-                lambda x: enc.transform([[str(x)]])[0, 0] if pd.notna(x) else np.nan
-            )
+            df_temp[col] = self._encode_cat_series_for_mice(col, df[col])
         for col in self.num_cols:
             df_temp[col] = df[col]
 
@@ -209,25 +247,17 @@ class TabularDataProcessor:
                 df_out[col] = df_imputed[col].values
 
         for col in self.cat_cols:
-            raw_vals = np.round(df_imputed[col]).astype(int)
-
-            if self.cat_encoding_method == 'label':
+            raw_vals = np.clip(
+                np.round(df_imputed[col].values).astype(int),
+                0, self.meta[col]['classes'] - 1
+            )
+            if self.cat_encoding_method in ('label', 'ordinal'):
                 df_out[col] = raw_vals
-
             else:
-                enc = self.meta[col]['encoder']
-                vals = np.clip(raw_vals, 0, self.meta[col]['classes'] - 1)
-                labels = enc.inverse_transform(vals)
-                df_out[col] = labels
+                # Bug 4 Fix: 调用统一辅助方法，内部处理维度差异
+                df_out[col] = self._cat_inverse_transform(col, raw_vals)
 
-                '''try:
-                    df_out[col] = pd.to_numeric(labels)
-                except ValueError:
-                    df_out[col] = labels'''
-
-            #df_out[col] = np.round(df_imputed[col]).astype(int)
-        
-        if self.cat_encoding_method == 'label':
+        if self.cat_encoding_method in ('label', 'ordinal'):
             return df_out[ordered_cols].astype('float32')
         return df_out[ordered_cols]
 
@@ -235,47 +265,34 @@ class TabularDataProcessor:
     def transform_readable(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         仅做 MICE 插补，不做分布变换，返回原始量纲的可读 DataFrame。
-
-        用途：生成用于对比实验的参考数据集（real_train / real_val / real_test）。
         插补器与 fit() 时完全共享，保证一致性。
-        类别列保持原始字符串标签，数值列保持原始量纲并按 precisions 舍入。
-        额外列（如 target_col）直接透传，不做任何处理。
         """
         ordered_cols = self.num_cols + self.cat_cols
-
-        # ---------- 编码为整数/浮点，供 imputer 使用 ----------
         df_temp = pd.DataFrame(index=df.index)
+
+        # Bug 2 Fix: 统一通过辅助方法编码
         for col in self.cat_cols:
-            enc = self.meta[col]['encoder']
-            df_temp[col] = df[col].apply(
-                lambda x: enc.transform([[str(x)]])[0,0] if pd.notna(x) else np.nan
-            )
+            df_temp[col] = self._encode_cat_series_for_mice(col, df[col])
         for col in self.num_cols:
             df_temp[col] = df[col]
 
-        # ---------- MICE 插补（使用 fit 时已拟合的 imputer） ----------
         df_imputed = pd.DataFrame(
             self.imputer.transform(df_temp[ordered_cols]),
             columns=ordered_cols,
             index=df.index,
         )
 
-        # ---------- 还原为原始量纲 ----------
         df_out = pd.DataFrame(index=df.index)
 
         for col in self.num_cols:
             meta = self.meta[col]
-            vals = df_imputed[col].values
-            vals = np.clip(vals, meta['min'], meta['max'])
-
+            vals = np.clip(df_imputed[col].values, meta['min'], meta['max'])
             q = meta['quantize_step']
             if q is not None and q > 0:
                 vals = np.round(vals / q) * q
                 vals = np.round(vals, 6)
-
             prec = self.precisions.get(col, 2)
             vals = np.round(vals, prec)
-
             if prec == 0 or meta['is_int']:
                 df_out[col] = vals.astype(np.int64)
             else:
@@ -283,20 +300,19 @@ class TabularDataProcessor:
 
         for col in self.cat_cols:
             raw = df_imputed[col].values
-            vals = np.where(raw == -1, 0, raw) 
-            vals = np.clip(vals.astype(int), 0, self.meta[col]['classes'] - 1)
-            labels = self.meta[col]['encoder'].inverse_transform(vals.reshape(-1, 1)).flatten()
+            raw = np.where(np.isnan(raw), 0.0, np.round(raw))
+            vals = np.clip(raw.astype(int), 0, self.meta[col]['classes'] - 1)
+            # Bug 3 Fix: 调用统一辅助方法，内部处理 LabelEncoder/OrdinalEncoder 的维度差异
+            labels = self._cat_inverse_transform(col, vals)
             try:
                 df_out[col] = pd.to_numeric(labels)
-            except ValueError:
+            except (ValueError, TypeError):
                 df_out[col] = labels
 
-        # ---------- 透传不在 processor 管辖范围内的列（如 target_col） ----------
         extra_cols = [c for c in df.columns if c not in ordered_cols]
         for col in extra_cols:
             df_out[col] = df[col].values
 
-        # 按原始列顺序返回
         return df_out[df.columns.tolist()]
 
     # =========================================================
@@ -310,46 +326,39 @@ class TabularDataProcessor:
 
         df_out = pd.DataFrame(index=df.index)
 
-        # ---------- 数值恢复 ----------
         for col in self.num_cols:
             meta = self.meta[col]
             vals = df[col].values.reshape(-1, 1)
-
             inversed = (
                 meta['encoder'].inverse_transform(vals).flatten()
                 if meta['encoder'] is not None
                 else vals.flatten()
             )
-
             inversed = np.clip(inversed, meta['min'], meta['max'])
-
             q = meta['quantize_step']
             if q is not None and q > 0:
                 inversed = np.round(inversed / q) * q
                 inversed = np.round(inversed, 6)
-
             prec = self.precisions.get(col, 2)
             inversed = np.round(inversed, prec)
-
             if prec == 0 or meta['is_int']:
                 df_out[col] = pd.array(inversed, dtype=pd.Int64Dtype())
             else:
                 df_out[col] = inversed
 
-        # ---------- 类别恢复 ----------
         for col in self.cat_cols:
             series = df[col]
             if series.dtype == object:
                 df_out[col] = series
                 continue
-
-            raw = df[col].values
-            vals = np.where(raw == -1, 0, raw)
-            vals = np.clip(vals.astype(int), 0, self.meta[col]['classes'] - 1)
-            labels = self.meta[col]['encoder'].inverse_transform(vals.reshape(-1, 1)).flatten()
+            raw = series.values
+            raw = np.where(np.isnan(raw), 0.0, np.round(raw))
+            vals = np.clip(raw.astype(int), 0, self.meta[col]['classes'] - 1)
+            # Bug 3 Fix: 统一辅助方法
+            labels = self._cat_inverse_transform(col, vals)
             try:
                 df_out[col] = pd.to_numeric(labels)
-            except ValueError:
+            except (ValueError, TypeError):
                 df_out[col] = labels
 
         return df_out

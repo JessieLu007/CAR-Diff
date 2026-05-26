@@ -6,7 +6,8 @@ from typing import List, Optional, Literal
 @dataclass
 class DataConfig:
     """数据集处理配置"""
-    num_transform_method: Literal['quantile', 'standard'] = 'quantile'
+    num_transform_method: Literal['quantile', 'standard', 'none'] = 'quantile'
+    cat_encoding_method: Literal['label', 'ordinal', 'none'] = 'ordinal'
     inject_physics_prior: bool = False
     random_state: int = 42
 

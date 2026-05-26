@@ -1,11 +1,11 @@
 # 文件位置: experiments/pipeline.py
-
 import os
 import gc
 import json
 import time
 import pickle
 import pandas as pd
+from pathlib import Path
 
 from datetime import datetime
 from contextlib import redirect_stdout
@@ -38,6 +38,7 @@ def run_pipeline(
         dataset_name: str,
         synthesizer: MedSynth,
         ml_mode: str,
+        split_seed: int, # 选择哪个seed下的划分数据集进行实验
         train_ratio: float = 0.7,
         val_ratio: float = 0.1,
         test_ratio: float = 0.2,
@@ -93,7 +94,7 @@ def run_pipeline(
             # =====================================================
             # 数据划分
             # =====================================================
-            unique_classes = df_all[target_col].nunique()
+            '''unique_classes = df_all[target_col].nunique()
             stratify_col = df_all[target_col] if unique_classes > 1 else None
 
             df_temp, df_test = train_test_split(
@@ -111,7 +112,13 @@ def run_pipeline(
                 test_size=val_ratio_in_temp,
                 stratify=stratify_col_temp,
                 random_state=exp_cfg.pipeline.random_state,
-            )
+            )'''
+
+            loc = Path(f"../splitted_data/seed_{split_seed}/{dataset_name}")
+
+            df_train = pd.read_csv(loc / "real_train_imputed.csv")
+            df_val = pd.read_csv(loc / "real_valid_imputed.csv")
+            df_test = pd.read_csv(loc / "real_test_imputed.csv")
 
             print(f"\n📊 数据划分: 训练集: {len(df_train)}  验证集: {len(df_val)}  测试集: {len(df_test)}")
 

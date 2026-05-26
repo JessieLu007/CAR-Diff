@@ -39,9 +39,9 @@
     },
 
     "thyroid": {
-        "categorical": ["Age"],
-        "numerical":["Gender", "Smoking", "Hx Smoking", "Hx Radiothreapy", "Thyroid Function", "Physical Examination",
-    "Adenopathy", "Pathology", "Focality", "Risk", "T", "N", "M", "Stage", "Response"],
+        "categorical": ["Gender", "Smoking", "Hx Smoking", "Hx Radiothreapy", "Thyroid Function", "Physical Examination",
+    "Adenopathy", "Pathology", "Focality", "Risk", "T", "N", "M", "Stage", "Response"],  
+        "numerical":["Age"],
         "target":"label"
     }
 }
