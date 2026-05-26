@@ -55,6 +55,8 @@ class MedSynth:
         # 实际参与建模的列（fit 后填充，task 路由后确定）
         self.model_feature_cols: Optional[list] = None
 
+        self._label_predictor = None
+
     # =====================================================
     # 属性代理：让 pipeline 不必穿透到 diffusion 内部
     # =====================================================
@@ -72,7 +74,7 @@ class MedSynth:
             df_val: Optional[pd.DataFrame] = None,
     ):
         #task = self.t_cfg.task
-
+        self.df_train = df_train
         self.original_columns = df_train.columns.tolist()
 
         # -------------------------------------------------
@@ -106,7 +108,7 @@ class MedSynth:
         # -------------------------------------------------
         model_cat_cols = [c for c in self.cat_cols if c in self.model_feature_cols]
 
-        if (self.t_cfg.task == "full_data_joint" and self.target_col not in model_cat_cols
+        if (self.t_cfg.task == "full_data" and self.target_col not in model_cat_cols
             and self.target_col in self.model_feature_cols):
             model_cat_cols.append(self.target_col)
 
@@ -242,15 +244,10 @@ class MedSynth:
         task = self.t_cfg.task
         null_idx = self.m_cfg.null_class_idx
 
-        if task == "full_data_joint":
+        if task == "full_data":
             # target_col 作为普通类别特征一并送入，y 全为 null
             df_features = df.copy()
             y = torch.full((len(df),), null_idx, dtype=torch.long)
-
-        elif task == "full_data_cond":
-            # target_col 抽出作为条件标签
-            y = torch.tensor(df[self.target_col].values, dtype=torch.long)
-            df_features = df.drop(columns=[self.target_col])
 
         elif task == "minority_uncond":
             # 仅保留少数类，y 全为 null，target_col 不参与特征
@@ -330,7 +327,7 @@ class MedSynth:
         """
         task = self.t_cfg.task
 
-        if task == "full_data_joint":
+        if task == "full_data":
             pass
         else:
             df_gen[self.target_col] = target_class
@@ -358,7 +355,7 @@ class MedSynth:
         total = self.target_dist["total"]
         ir = self.target_dist["IR"]
 
-        if task in ("full_data_joint", "full_data_cond"):
+        if task == "full_data":
             return total
 
         if task in ("minority_uncond", "minority_cond"):

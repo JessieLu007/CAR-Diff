@@ -29,16 +29,15 @@ def sample_core(model, num_samples: int, y_cond: int, cfg: SamplingConfig):
         repulse_weight      = cfg.repulse_weight_boost
 
     # full_data 任务一律用 null 条件，不启用 CFG
-    if model.train_cfg.task == 'full_data_joint':
+    if model.train_cfg.task == 'full_data':
         y_cond = model.cfg.null_class_idx
-    # full_data_cond不强制null, y_cond由调用方传入
+
 
     y_pos = torch.full((b,), y_cond,                    device=device, dtype=torch.long)
     y_unc = torch.full((b,), model.cfg.null_class_idx,  device=device, dtype=torch.long)
     y_neg = torch.full((b,), 1 - y_cond,                device=device, dtype=torch.long)
 
-    use_cfg = (model.train_cfg.task in ('minority_cond', 'full_data_cond')
-               and model.train_cfg.objective == 'clf_boost')
+    use_cfg = (model.train_cfg.task == 'minority_cond' and model.train_cfg.objective == 'clf_boost')
 
     # ------------------------------------------------------------------ #
     # 2. 初始化采样起点

@@ -30,11 +30,12 @@ class ModelConfig:
     prediction_type: str = 'eps' # 默认eps,可切换为x0,此时直接预测x0而非噪声epsilon
 
     # 损失组件
+    logit_adj_tau: float = 0.3          # LA loss先验修正强度
     use_adaptive_focal: bool = True     # 是否使用抵抗饥饿的自适应 Focal Loss
     gma_loss_weight: float = 0.5        # Global Marginal Alignment(GMA) 权重
     corr_weight: float = 0.0            # 相关性权重损失
-    corr_t_ratio: float = 0.2          # 相关性触发的噪声阶段比率
-    gamma_base: float = 1.0            # focal loss中的gamma_base设置
+    corr_t_ratio: float = 0.2           # 相关性触发的噪声阶段比率
+    gamma_base: float = 1.0             # focal loss中的gamma_base设置
 
     # CFG 与后验参数
     null_class_idx: int = 2
@@ -59,15 +60,10 @@ class TrainingConfig:
     # ------------------------------------------------------------------
     # task：训练范式，调用方始终传入全量数据，内部自动路由
     #
-    #   "full_data_joint"
+    #   "full_data"
     #       训练数据：全量（target_col 作为普通分类特征保留）
     #       建模范式：Joint 联合分布 P(X, Y)
     #       典型用途：TSTR、替代数据集生成
-    #
-    #   "full_data_cond"
-    #       训练数据：全量（target_col 剥离为条件标签）
-    #       建模范式：Conditional P(X | Y)，CFG 引导
-    #       典型用途：按类别精细控制生成质量
     #
     #   "minority_uncond"
     #       训练数据：仅 label=1 子集（内部自动筛选）
@@ -80,8 +76,7 @@ class TrainingConfig:
     #       典型用途：CFG 引导的少数类增强（分类器提升场景）
     # ------------------------------------------------------------------
     task: Literal[
-        'full_data_joint',
-        'full_data_cond',
+        'full_data',
         'minority_uncond',
         'minority_cond',
     ] = 'full_data_joint'
@@ -129,7 +124,6 @@ class ExperimentConfig:
             sampling=replace(self.sampling, **(sampling or {})),
             pipeline=replace(self.pipeline, **(pipeline or {}))
         )
-
 
 def make_default_experiment_config() -> ExperimentConfig:
     return ExperimentConfig(

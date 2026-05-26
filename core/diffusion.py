@@ -22,17 +22,11 @@ from .diff_training import train_loop
 # ---------------------------------------------------------------------------
 # task 取值说明（对应 TrainingConfig.task）
 #
-#   "full_data_joint"
+#   "full_data"
 #       训练数据：全量（含 target_col）
 #       建模范式：Joint 联合分布 P(X, Y)，target_col 作为普通分类特征一起学
 #       y 条件：全部置为 null_class_idx（无监督引导）
 #       典型用途：TSTR、替代数据集生成
-#
-#   "full_data_cond"
-#       训练数据：全量（target_col 从特征中移除，作为条件标签）
-#       建模范式：Conditional P(X | Y)，用真实标签做 CFG 引导
-#       y 条件：真实 target_col 值，训练时按 uncond_p 随机丢弃为 null
-#       典型用途：按类别精细控制生成质量
 #
 #   "minority_uncond"
 #       训练数据：仅 label=1 的少数类子集
@@ -74,6 +68,24 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         # 索引0为num，1为cat，用来调节损失权重
         self.log_vars = nn.Parameter(torch.zeros(2))
 
+
+    # diffusion.py 中，_count_parameters 改为 staticmethod
+    @staticmethod
+    def _count_parameters(model: nn.Module) -> None:
+        total     = sum(p.numel() for p in model.parameters())        # 原来少了 ()
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)  # 同上
+
+        print(f"\n{'-'*45}")
+        print(f"    模型参数规模")
+        print(f"{'-'*45}")
+        for name, module in model.named_children():
+            n = sum(p.numel() for p in module.parameters())           # 原来少了 ()
+            print(f"    {name:<30} {n:>8,}")
+        print(f"{'-'*45}")                                            # 原来是 f"{'-'}*45"
+        print(f"    {'Total':<30} {total:>8,}")
+        print(f"    {'Trainable':<30} {trainable:>8,}")
+        print(f"{'-'*45}\n")
+
     # =========================================================
     # 模型拟合
     # 调用方负责：数据路由、预处理、DataLoader 构建、meta_info 准备
@@ -110,6 +122,8 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
             dropout=self.cfg.dropout,
         ).to(self.device)
 
+        self._count_parameters(self._denoise_fn)
+
         train_loop(self, train_dataloader, val_dataloader, train_config)
 
         return self
@@ -133,8 +147,8 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         self._denoise_fn.eval()
         assert sampling_config.num_samples is not None, "SamplingConfig.num_samples 未设置"
 
-        # joint 模式下模型无视外部条件，一律使用 null
-        if self.train_cfg.task == "full_data_joint":
+        # full_data 模式下模型无视外部条件，一律使用 null
+        if self.train_cfg.task == "full_data":
             y_for_sampling = self.cfg.null_class_idx
         else:
             y_for_sampling = y_cond if y_cond is not None else self.cfg.null_class_idx
@@ -165,18 +179,13 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
 
         # conditional 范式：按 uncond_p 随机丢弃标签，实现 CFG 训练
         # joint / uncond 范式：标签已在路由阶段全部置为 null，此处保持原值即可
-        if self.train_cfg.task in ("full_data_cond", "minority_cond"):
+        if self.train_cfg.task == "minority_cond":
             drop_mask = torch.rand((b,), device=self.device) < self.train_cfg.uncond_p
             y_cond[drop_mask] = self.cfg.null_class_idx
 
         x_num = batch_x[:, :self.num_numerical_features].float()
 
         x_cat = batch_x[:, self.num_numerical_features:].long()
-
-        '''print("shape =", x_cat.shape)
-        print("dtype =", x_cat.dtype)
-        print("min =", x_cat.min())
-        print("max =", x_cat.max())'''
 
         noise = torch.randn_like(x_num)
         x_num_t = (
