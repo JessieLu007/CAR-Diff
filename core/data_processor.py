@@ -123,17 +123,19 @@ class TabularDataProcessor:
             # Fix: dropna() 在 astype(str) 之前，避免 'nan' 字符串被编入 encoder
             valid_str = series_raw.dropna().astype(str)
 
-            if self.cat_encoding_method == 'ordinal':
+            if self.cat_encoding_method == 'label':
+                # LabelEncoder不支持未知类别，仅当确信测试集无新类别时使用
+                encoder = LabelEncoder()
+                encoder.fit(valid_str)
+                n_classes = len(encoder.classes_)
+
+            else: # 'ordinal' 或 'none'都需要处理未知类别
                 encoder = OrdinalEncoder(
                     handle_unknown="use_encoded_value",
                     unknown_value=-1,
                 )
                 encoder.fit(valid_str.values.reshape(-1, 1))
                 n_classes = len(encoder.categories_[0])
-            else:
-                encoder = LabelEncoder()
-                encoder.fit(valid_str)
-                n_classes = len(encoder.classes_)
 
             self.meta[col] = {
                 'type': 'cat',
@@ -215,11 +217,11 @@ class TabularDataProcessor:
         for col in self.num_cols:
             df_temp[col] = df[col]
 
-        df_imputed = pd.DataFrame(
-            self.imputer.transform(df_temp[ordered_cols]),
-            columns=ordered_cols,
-            index=df.index,
-        )
+        if df_temp[ordered_cols].isnull().any().any():
+            imputed_array = self.imputer.transform(df_temp[ordered_cols])
+            df_imputed = pd.DataFrame(imputed_array, columns=ordered_cols, index=df.index)
+        else:
+            df_imputed = df_temp[ordered_cols].copy()
 
         df_out = pd.DataFrame(index=df.index)
 
@@ -235,21 +237,10 @@ class TabularDataProcessor:
                 np.round(df_imputed[col].values).astype(int),
                 0, self.meta[col]['classes'] - 1
             )
-        # 修改部分，代替后面''' '''内部的代码
             df_out[col] = raw_vals
 
         return df_out[ordered_cols].astype('float32')
-        '''
-            if self.cat_encoding_method in ('label', 'ordinal'):
-                df_out[col] = raw_vals
-            else:
-                # Bug 4 Fix: 调用统一辅助方法，内部处理维度差异
-                df_out[col] = self._cat_inverse_transform(col, raw_vals)
 
-        if self.cat_encoding_method in ('label', 'ordinal'):
-            return df_out[ordered_cols].astype('float32')
-        return df_out[ordered_cols]
-        '''
 
     # =========================================================
     def transform_readable(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -257,6 +248,7 @@ class TabularDataProcessor:
         仅做 MICE 插补，不做分布变换，返回原始量纲的可读 DataFrame。
         插补器与 fit() 时完全共享，保证一致性。
         """
+        assert hasattr(self, 'meta') and self.meta, "必须先调用 fit() 方法"
         ordered_cols = self.num_cols + self.cat_cols
         df_temp = pd.DataFrame(index=df.index)
 
@@ -305,38 +297,6 @@ class TabularDataProcessor:
 
         return df_out[df.columns.tolist()]
     
-    def canonicalize_old(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        仅执行剪裁/舍入/类型恢复， 不进行MICE
-        用于已经无缺失值的预填充数据
-        """
-        df_out = pd.DataFrame(index=df.index)
-
-        for col in self.num_cols:
-            meta = self.meta[col]
-            vals = np.clip(df[col].values, meta['min'], meta['max'])
-            q = meta['quantize_step']
-            if q is not None and q > 0:
-                vals = np.round(vals / q) * q
-            prec = self.precisions.get(col, 2)
-            vals = np.round(vals, prec)
-            df_out[col] = vals.astype(np.int64) if (prec == 0 or meta['is_int']) else vals
-
-        for col in self.cat_cols:
-            raw = df[col].values
-            raw = np.where(np.isnan(raw), 0.0, np.round(raw))
-            vals = np.clip(raw.astype(int), 0, self.meta[col]['classes'] - 1)
-            labels = self._cat_inverse_transform(col, vals)
-            try:
-                df_out[col] = pd.to_numeric(labels)
-            except (ValueError, TypeError):
-                df_out[col] = labels
-
-        extra_cols = [c for c in df.columns if c not in self.num_cols + self.cat_cols]
-        for col in extra_cols:
-            df_out[col] = df[col].values
-
-        return df_out[df.columns.tolist()]
     
     def canonicalize(self, df: pd.DataFrame) -> pd.DataFrame:
         """

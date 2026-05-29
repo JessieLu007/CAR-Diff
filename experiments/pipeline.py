@@ -110,7 +110,7 @@ def run_pipeline(
                 df_temp,
                 test_size=val_ratio_in_temp,
                 stratify=stratify_col_temp,
-                random_state=exp_cfg.pipeline.random_state,
+                random_state=exp_cfg.pipeline.random_state + 42,
             )
 
             # =====================================================
