@@ -104,30 +104,14 @@ class TabularDataProcessor:
         result['quantize_step'] = self._detect_quantize_step(unique)
         return result
 
-    @staticmethod
-    def _infer_precision(series: pd.Series) -> int:
-        sample = series.dropna().sample(min(1000, len(series)))
+    #@staticmethod
+    def _infer_precision(self, series: pd.Series) -> int:
+        sample = series.dropna().sample(min(1000, len(series)), random_state=self.random_state)
         decimals = [
             len(f"{v:.10f}".rstrip('0').split('.')[1]) if '.' in f"{v:.10f}".rstrip('0') else 0
             for v in sample
         ]
         return int(min(np.percentile(decimals, 95), 4))
-    
-    # =========================================================
-    # 类别编码辅助方法（私有）
-    # =========================================================
-    def _cat_encode(self, enc, x_str: str):
-        if isinstance(enc, OrdinalEncoder):
-            return enc.transform([[x_str]])[0, 0]
-        else:
-            return enc.transform([x_str])[0]
-
-    def _cat_inverse_transform(self, col: str, vals_1d: np.ndarray) -> np.ndarray:
-        enc = self.meta[col]['encoder']
-        if isinstance(enc, OrdinalEncoder):
-            return enc.inverse_transform(vals_1d.reshape(-1, 1)).flatten()
-        else:
-            return enc.inverse_transform(vals_1d)
 
     # =========================================================
     def fit(self, df: pd.DataFrame):
@@ -251,6 +235,11 @@ class TabularDataProcessor:
                 np.round(df_imputed[col].values).astype(int),
                 0, self.meta[col]['classes'] - 1
             )
+        # 修改部分，代替后面''' '''内部的代码
+            df_out[col] = raw_vals
+
+        return df_out[ordered_cols].astype('float32')
+        '''
             if self.cat_encoding_method in ('label', 'ordinal'):
                 df_out[col] = raw_vals
             else:
@@ -260,6 +249,7 @@ class TabularDataProcessor:
         if self.cat_encoding_method in ('label', 'ordinal'):
             return df_out[ordered_cols].astype('float32')
         return df_out[ordered_cols]
+        '''
 
     # =========================================================
     def transform_readable(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -310,6 +300,67 @@ class TabularDataProcessor:
                 df_out[col] = labels
 
         extra_cols = [c for c in df.columns if c not in ordered_cols]
+        for col in extra_cols:
+            df_out[col] = df[col].values
+
+        return df_out[df.columns.tolist()]
+    
+    def canonicalize_old(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        仅执行剪裁/舍入/类型恢复， 不进行MICE
+        用于已经无缺失值的预填充数据
+        """
+        df_out = pd.DataFrame(index=df.index)
+
+        for col in self.num_cols:
+            meta = self.meta[col]
+            vals = np.clip(df[col].values, meta['min'], meta['max'])
+            q = meta['quantize_step']
+            if q is not None and q > 0:
+                vals = np.round(vals / q) * q
+            prec = self.precisions.get(col, 2)
+            vals = np.round(vals, prec)
+            df_out[col] = vals.astype(np.int64) if (prec == 0 or meta['is_int']) else vals
+
+        for col in self.cat_cols:
+            raw = df[col].values
+            raw = np.where(np.isnan(raw), 0.0, np.round(raw))
+            vals = np.clip(raw.astype(int), 0, self.meta[col]['classes'] - 1)
+            labels = self._cat_inverse_transform(col, vals)
+            try:
+                df_out[col] = pd.to_numeric(labels)
+            except (ValueError, TypeError):
+                df_out[col] = labels
+
+        extra_cols = [c for c in df.columns if c not in self.num_cols + self.cat_cols]
+        for col in extra_cols:
+            df_out[col] = df[col].values
+
+        return df_out[df.columns.tolist()]
+    
+    def canonicalize(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        对已经做过缺失值处理的（预填充）数据，
+        仅对数值列执行 clipping/rounding/类型恢复。
+        cat 列已经是原始标签，直接透传。
+        """
+        df_out = pd.DataFrame(index=df.index)
+
+        for col in self.num_cols:
+            meta = self.meta[col]
+            vals = np.clip(df[col].values.astype(float), meta['min'], meta['max'])
+            q = meta['quantize_step']
+            if q is not None and q > 0:
+                vals = np.round(vals / q) * q
+                vals = np.round(vals, 6)
+            prec = self.precisions.get(col, 2)
+            vals = np.round(vals, prec)
+            df_out[col] = vals.astype(np.int64) if (prec == 0 or meta['is_int']) else vals
+
+        for col in self.cat_cols:
+            df_out[col] = df[col].values
+
+        extra_cols = [c for c in df.columns if c not in self.num_cols + self.cat_cols]
         for col in extra_cols:
             df_out[col] = df[col].values
 

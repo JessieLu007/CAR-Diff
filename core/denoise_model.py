@@ -252,21 +252,8 @@ class TabMLPDenoise(nn.Module):
 
         # ── 条件向量 ────────────────────────────────────────────────
         t_emb     = self.time_embed(timestep_embedding(timesteps, self.dim_t))
-        y_raw_emb = self.label_emb(y.squeeze().long())
+        y_raw_emb = self.label_emb(y.view(-1).long())
         emb       = t_emb + y_raw_emb          # [B, dim_t]，用于 AdaLN
-
-        '''print("\n====== DEBUG x_cat ======")
-        print("before_long")
-        print(x_in[:, self.num_numerical:][:5])
-        print("after long")
-        print(x_in[:, self.num_numerical:].long()[:5])
-        print("========================\n")
-
-        print(self.num_classes)
-        print(len(self.num_classes))
-        print(sum(self.num_classes))
-
-        print(x_in[:, self.num_numerical:].shape)'''
 
         # ── 拆分输入 ─────────────────────────────────────────────────
         x_num = x_in[:, :self.num_numerical]                   # [B, N_num]
@@ -300,13 +287,6 @@ class TabMLPDenoise(nn.Module):
                 self.cat_dropout(tok)
             )
             start = end
-
-        '''if self.cat_embed_layers is not None:
-            for i, (emb_layer, proj) in enumerate(
-                zip(self.cat_embed_layers, self.cat_col_projs)
-            ):
-                tok = proj(emb_layer(x_cat[:, i]))             # [B, D]
-                cat_tokens.append(self.cat_dropout(tok))'''
 
         # ── 改进 3：Cross-Attention（数值 Query 类别 KV）────────────────
         # 在 Token 化完成后、拼接前对数值 Token 做跨模态增强

@@ -18,10 +18,10 @@ def sample_core(model, num_samples: int, y_cond: int, cfg: SamplingConfig):
     # 1. 采样超参（由 objective 决定）
     # ------------------------------------------------------------------ #
     if model.train_cfg.objective == 'fidelity':
-        temperature_num     = 1.0 #cfg.temperature_fedility
+        temperature_num     = 1.0
         temperature_cat     = getattr(cfg, 'cat_temperature_cap', 0.8)
-        cfg_scale           = cfg.cfg_scale_fedility
-        repulse_weight      = cfg.repulse_weight_fedility
+        cfg_scale           = cfg.cfg_scale_fidelity
+        repulse_weight      = cfg.repulse_weight_fidelity
     else:  # clf_boost
         temperature_num     = cfg.temperature_boost
         temperature_cat     = cfg.temperature_boost

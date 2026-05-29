@@ -1,6 +1,7 @@
 # 文件位置: experiments/pipeline.py
 import os
 import gc
+import sys
 import json
 import time
 import pickle
@@ -32,13 +33,14 @@ class Tee:
 # 主实验 Pipeline
 # =========================================================
 def run_pipeline(
-        df_all: pd.DataFrame,
+        df_all:pd.DataFrame,
         target_col: str,
         cat_cols: list,
         dataset_name: str,
         synthesizer: MedSynth,
         ml_mode: str,
-        split_seed: int, # 选择哪个seed下的划分数据集进行实验
+        #split_seed: int, # 选择哪个seed下的划分数据集进行实验
+        target_minority_class: int = 1,
         train_ratio: float = 0.7,
         val_ratio: float = 0.1,
         test_ratio: float = 0.2,
@@ -80,9 +82,6 @@ def run_pipeline(
     # =====================================================
     log_path = os.path.join(save_path, "console_output.txt")
 
-    from contextlib import redirect_stdout
-    import sys
-
     with open(log_path, 'w', encoding='utf-8', buffering=1) as log_f:
         tee = Tee(sys.stdout, log_f) # 同时写入控制台和文件
         with redirect_stdout(tee):
@@ -91,10 +90,10 @@ def run_pipeline(
             print(f"📁 保存目录: {save_path}")
             print("=" * 60)
 
-            # =====================================================
+             # =====================================================
             # 数据划分
             # =====================================================
-            '''unique_classes = df_all[target_col].nunique()
+            unique_classes = df_all[target_col].nunique()
             stratify_col = df_all[target_col] if unique_classes > 1 else None
 
             df_temp, df_test = train_test_split(
@@ -112,13 +111,16 @@ def run_pipeline(
                 test_size=val_ratio_in_temp,
                 stratify=stratify_col_temp,
                 random_state=exp_cfg.pipeline.random_state,
-            )'''
+            )
 
-            loc = Path(f"../splitted_data/seed_{split_seed}/{dataset_name}")
+            # =====================================================
+            # 数据划分,直接读取事先划分好、且已经补全缺失值的数据
+            # =====================================================
+            '''loc = Path(f"../splitted_data/seed_{split_seed}/{dataset_name}")
 
             df_train = pd.read_csv(loc / "real_train_imputed.csv")
             df_val = pd.read_csv(loc / "real_valid_imputed.csv")
-            df_test = pd.read_csv(loc / "real_test_imputed.csv")
+            df_test = pd.read_csv(loc / "real_test_imputed.csv")'''
 
             print(f"\n📊 数据划分: 训练集: {len(df_train)}  验证集: {len(df_val)}  测试集: {len(df_test)}")
 
@@ -156,16 +158,16 @@ def run_pipeline(
             # =====================================================
             print("🔧 生成插补后参考数据集...")
 
-            df_train_imputed = synthesizer.transform_readable(df_train)
-            df_val_imputed   = synthesizer.transform_readable(df_val)
-            df_test_imputed  = synthesizer.transform_readable(df_test)
-
+            df_train_imputed = synthesizer.processor.transform_readable(df_train)
+            df_val_imputed   = synthesizer.processor.transform_readable(df_val)
+            df_test_imputed  = synthesizer.processor.transform_readable(df_test)
+  
             # =====================================================
             # 生成合成数据
             # =====================================================
             sample_start = time.time()
 
-            global_minority_class = df_all[target_col].value_counts().idxmin()
+            global_minority_class = target_minority_class
 
             df_fake = synthesizer.generate(target_class=global_minority_class)
 
@@ -178,11 +180,12 @@ def run_pipeline(
             print("💾 保存 Loss History...")
 
             loss_history = synthesizer.loss_history   # 通过属性代理访问，不穿透到 diffusion
+            n = len(loss_history.train_total)
             loss_df = pd.DataFrame({
                 "train_total": loss_history.train_total,
                 "train_num":   loss_history.train_num,
                 "train_cat":   loss_history.train_cat,
-                "val_total":   loss_history.val_total,
+                "val_total":   loss_history.val_total+ [float('nan')] * (n - len(loss_history.val_total)),
             })
             loss_df.to_csv(os.path.join(save_path, "loss_history.csv"), index=False)
 
@@ -224,7 +227,7 @@ def run_pipeline(
             final_config = {
                 "dataset_info": {
                     "name":       dataset_name,
-                    "total_rows": len(df_all),
+                    "total_rows": len(df_train) + len(df_val) + len(df_test),
                     "target":     target_col,
                 },
                 "experiment_config": asdict(exp_cfg),

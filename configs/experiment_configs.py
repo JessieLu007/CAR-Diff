@@ -6,14 +6,14 @@ from typing import List, Optional, Literal
 @dataclass
 class DataConfig:
     """数据集处理配置"""
-    num_transform_method: Literal['quantile', 'standard', 'none'] = 'quantile'
+    num_transform_method: Literal['quantile', 'minmax', 'none'] = 'quantile'
     cat_encoding_method: Literal['label', 'ordinal', 'none'] = 'ordinal'
     inject_physics_prior: bool = False
     random_state: int = 42
 
 @dataclass
 class PipelineConfig:
-    random_state: int = 42
+    random_state: int = 0
     save_base_dir: str = "results"
 
 
@@ -79,7 +79,7 @@ class TrainingConfig:
         'full_data',
         'minority_uncond',
         'minority_cond',
-    ] = 'full_data_joint'
+    ] = 'full_data'
 
     # 训练/生成的主要目标
     # fidelity  : 拟真（分布贴近真实）
@@ -92,11 +92,11 @@ class SamplingConfig:
     num_samples: Optional[int] = None
 
     # 下方参数通常由 gen_strategy 自动覆盖，也可手动微调
-    cfg_scale_fedility: float = 1.0
+    cfg_scale_fidelity: float = 1.0
     cfg_scale_boost: float = 3.0
-    temperature_fedility: float = 1.0
+    temperature_fidelity: float = 1.0
     temperature_boost: float = 0.7
-    repulse_weight_fedility: float = 0.0
+    repulse_weight_fidelity: float = 0.0
     repulse_weight_boost: float = 1.0
 
 

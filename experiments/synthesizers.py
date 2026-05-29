@@ -198,14 +198,14 @@ class MedSynth:
     # =====================================================
     # 插补后可读数据集（供对比实验使用）
     # =====================================================
-    def transform_readable(self, df: pd.DataFrame) -> pd.DataFrame:
+    '''def transform_readable(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         对任意 DataFrame 做与训练一致的 MICE 插补，返回原始量纲可读版本。
         target_col 等不在 processor 管辖内的列会被直接透传。
         需在 fit() 之后调用。
         """
         assert self.processor is not None, "请先 fit()"
-        return self.processor.transform_readable(df)
+        return self.processor.transform_readable(df)'''
 
     # =====================================================
     # 私有：目标类分布统计

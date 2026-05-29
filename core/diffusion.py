@@ -12,7 +12,7 @@ from typing import Optional
 from .utils import extract, index_to_log_onehot, log_1_min_a, log_add_exp, ohe_to_categories
 from configs.experiment_configs import ModelConfig, TrainingConfig, SamplingConfig
 
-from .diff_losses import compute_numerical_loss
+from .num_loss import compute_numerical_loss
 from .cat_loss import compute_categorical_loss
 from .diff_schedules import DiffusionScheduleMixin
 from .diff_sampling import sample_core
@@ -155,17 +155,13 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
 
         raw = sample_core(self, sampling_config.num_samples, y_for_sampling, cfg=sampling_config)
 
-        x_num_latent = raw[:, :self.num_numerical_features].cpu().numpy()
-
-        #print(np.percentile(x_num_latent, [0, 1, 5, 50, 95, 99, 100], axis=0))
-
         self._denoise_fn.train()
 
         if return_latent:
             x_num_latent = raw[:, :self.num_numerical_features].clone()
-            return x_num_latent.cpu(), raw.cpu()
+            return x_num_latent, raw
 
-        return raw.cpu()
+        return raw
 
     # =========================================================
     # 核心数学模块
@@ -214,8 +210,6 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
 
         total_loss = (prec_num * loss_num + self.log_vars[0]) + \
                      (prec_cat * loss_cat + self.log_vars[1])
-
-        #total_loss = loss_num + loss_cat
 
         return total_loss, loss_num, loss_cat, loss_corr
 
