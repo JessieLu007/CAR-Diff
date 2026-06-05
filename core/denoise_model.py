@@ -7,7 +7,6 @@ import math
 # ─────────────────────────────────────────────
 # 工具函数
 # ─────────────────────────────────────────────
-
 def timestep_embedding(timesteps, dim, max_period=10000):
     half = dim // 2
     freqs = torch.exp(
@@ -21,11 +20,9 @@ def timestep_embedding(timesteps, dim, max_period=10000):
         embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
     return embedding
 
-
 # ─────────────────────────────────────────────
 # 编码模块
 # ─────────────────────────────────────────────
-
 class PeriodicEmbedding(nn.Module):
     """
     单列数值编码：sin/cos 展开 → 线性投影到 embed_dim。
@@ -110,6 +107,7 @@ class TabMLPDenoise(nn.Module):
 
     def __init__(
         self,
+        task,
         info,
         num_classes_cond: int = 2,
         dim_t: int = 128,
@@ -122,10 +120,19 @@ class TabMLPDenoise(nn.Module):
     ):
         super().__init__()
 
+        self.task          = task
         self.dim_t         = dim_t
         self.num_numerical = info['num_numerical']
         self.num_classes   = info['num_classes']          # list[int]
         true_marginals     = info.get('true_marginals', None)
+
+        '''self.column_metas = build_column_metas(
+        true_marginals  = self.true_marginals,
+        gamma_base      = getattr(model_cfg, "gamma_base",        2.0),
+        alpha_scale     = getattr(model_cfg, "focal_alpha_scale",  1.0),
+        gma_weight      = getattr(model_cfg, "gma_loss_weight",    0.08),
+        focal_mode      = getattr(model_cfg, "focal_mode",         "adaptive"),
+    )'''
 
         # ── 1. 逐列编码器 ────────────────────────────────────────────
         # 数值列：每列独立的 PeriodicEmbedding
@@ -167,33 +174,53 @@ class TabMLPDenoise(nn.Module):
             nn.init.zeros_(self.cat_to_num.bias)
 
             # 可学习标量：控制 FiLM 调制的整体幅度
-            self.gate_scale = nn.Parameter(torch.zeros(1))  # ← 改进 1
+            if self.task in ('minority_cond', 'minority_uncond'):
+                self.gate_scale = nn.Parameter(torch.zeros(1))
+                print(f"task = {self.task}, 初始化gate_scale为nn.Parameter(torch.zeros(1))")
+            elif self.task == 'full_data':
+                self.gate_scale = nn.Parameter(torch.full((1,), 0.1))
+                print(f"task = {self.task}, 初始化gate_scale为nn.Parameter(torch.full((1,), 0.1))")
 
         # ── 3. 改进 3：Cross-Attention（数值 Query 类别 KV）────────────
         if self.num_numerical > 0 and len(self.num_classes) > 0:
-            self.cross_attn = CrossAttentionBlock(dim_hidden, nhead_cross, dropout)
+            self.cross_attn         = CrossAttentionBlock(dim_hidden, nhead_cross, dropout)
+            self.reverse_cross_attn = CrossAttentionBlock(dim_hidden, nhead_cross, dropout)
         else:
             self.cross_attn = None
 
         # ── 4. 改进 4：列间 Transformer（改进 2 的自注意力升级）─────────
         # 输入 [B, N_cols, D]，N_cols = num_numerical + len(num_classes)
         total_cols = self.num_numerical + len(self.num_classes)
-        if total_cols > 1:
-            self.column_transformer = nn.TransformerEncoderLayer(
-                d_model=dim_hidden,
-                nhead=nhead_col,
-                dim_feedforward=dim_hidden * 2,
-                dropout=dropout,
-                batch_first=True,
-                norm_first=True,              # Pre-LN 更稳定
+
+        if self.num_numerical > 1:
+            self.num_transformer = nn.TransformerEncoderLayer(
+                d_model=dim_hidden, nhead=nhead_col,
+                dim_feedforward=dim_hidden * 2, dropout=dropout,
+                batch_first=True, norm_first=True,
             )
         else:
-            self.column_transformer = None
+            self.num_transformer = None
 
-        # 添加 cls token (classification token) 
-        self.cls_token = nn.Parameter(
-            torch.randn(1, 1, dim_hidden) * 0.02
+        if len(self.num_classes) > 1:
+            self.cat_transformer = nn.TransformerEncoderLayer(
+                d_model=dim_hidden, nhead=nhead_col,
+                dim_feedforward=dim_hidden * 2, dropout=dropout,
+                batch_first=True, norm_first=True,
+            )
+        else:
+            self.cat_transformer = None
+
+        # pool_query: 可学习的聚合向量， 不走self-attn, 只做一次cross-attn
+        self.pool_query = nn.Parameter(torch.randn(1, 1, dim_hidden) * 0.02)
+
+        self.pool_attn = nn.MultiheadAttention(
+            embed_dim = dim_hidden,
+            num_heads = nhead_col,
+            dropout   = dropout,
+            batch_first = True,
         )
+        self.pool_norm_q = nn.LayerNorm(dim_hidden)
+        self.pool_norm_kv = nn.LayerNorm(dim_hidden)
 
         # ── 5. 条件编码（时间步 + 类别标签）────────────────────────────
         self.time_embed = nn.Sequential(
@@ -202,7 +229,7 @@ class TabMLPDenoise(nn.Module):
             nn.Linear(dim_t, dim_t),
         )
         self.label_emb      = nn.Embedding(num_classes_cond + 1, dim_t)
-        self.label_to_hidden = nn.Linear(dim_t, dim_hidden)
+        #self.label_to_hidden = nn.Linear(dim_t, dim_hidden)
 
         # ── 6. 聚合投影（Token 均值 → h）────────────────────────────────
         self.proj_fuse = nn.Sequential(
@@ -211,11 +238,22 @@ class TabMLPDenoise(nn.Module):
             nn.LayerNorm(dim_hidden),
         )
 
-        # ── 7. MLP 残差主干（接收条件 emb）──────────────────────────────
-        self.layers = nn.ModuleList([
-            MLPResidualBlock(dim_hidden, dim_t, dropout)
-            for _ in range(num_layers)
-        ])
+        # 1. 数值专属塔
+        if self.num_numerical > 0:
+            self.num_backbone = nn.ModuleList([
+                MLPResidualBlock(dim_hidden, dim_t, dropout)
+                for _ in range(num_layers)
+            ])
+        else:
+            self.num_backbone = None
+
+        if len(self.num_classes) > 0:
+            self.cat_backbone = nn.ModuleList([
+                MLPResidualBlock(dim_hidden, dim_t, dropout)
+                for _ in range(num_layers)
+            ])
+        else:
+            self.cat_backbone = None
 
         # ── 8. 输出头 ────────────────────────────────────────────────
         if self.num_numerical > 0:
@@ -306,43 +344,62 @@ class TabMLPDenoise(nn.Module):
                 for tok in num_tokens
             ]
 
-            # Cross-Attention：数值 Token 去询问类别 Token
-            num_seq = torch.stack(num_tokens, dim=1)           # [B, N_num, D]
-            cat_seq = torch.stack(cat_tokens, dim=1)           # [B, N_cat, D]
-            num_seq = self.cross_attn(num_seq, cat_seq)        # [B, N_num, D]
-            num_tokens = [num_seq[:, i] for i in range(num_seq.shape[1])]
+        # ── 阶段1：模态内自注意力（与 TEST-3 相同，无 CLS）──────────────
+        num_seq = torch.stack(num_tokens, dim=1)           # [B, N_num, D]
+        cat_seq = torch.stack(cat_tokens, dim=1)           # [B, N_cat, D]
 
-        # ── 改进 4：拼接所有列 Token → 列间 Transformer ─────────────────
-        all_tokens = num_tokens + cat_tokens                   # list of [B, D]
+        if self.num_transformer is not None:
+            num_seq = self.num_transformer(num_seq) # num-num 关联
+        if self.cat_transformer is not None:
+            cat_seq = self.cat_transformer(cat_seq) # cat-cat关联
 
-        if all_tokens:
-            token_seq = torch.stack(all_tokens, dim=1)        # [B, N_cols, D]
-            cls_token = self.cls_token.expand(B, -1, -1)
-            token_seq = torch.cat([cls_token, token_seq], dim=1)
-        else:
-            raise ValueError("No tokens to process.")
+        # ── 阶段2：FiLM + cross_attn（与 TEST-3 相同）────────────────────
+        if self.cross_attn is not None:
+            h_cat_mean = cat_seq.mean(dim=1)
+            
+            gamma_beta = self.cat_to_num(h_cat_mean)
+            gamma, beta = gamma_beta.chunk(2, dim=-1)
+            gate       = torch.sigmoid(self.gate_layer(h_cat_mean))
+            scale_coef = torch.tanh(self.gate_scale)
+        
+            num_seq = num_seq + scale_coef * gate.unsqueeze(1) * (
+                num_seq * gamma.unsqueeze(1) + beta.unsqueeze(1)
+            )
+            num_seq = self.cross_attn(num_seq, cat_seq) # [B, N_num, D] num <- cat
+            cat_seq = self.reverse_cross_attn(cat_seq, num_seq) # cat <- num
+        
+        # ── 阶段3：pool_query cross-attn 聚合 （TEST-6核心改动）─────────────────────────
+        # 拼接两分支（都已经过模态内自注意力）
+        all_seq = torch.cat([num_seq, cat_seq], dim=1) # [B, N_num+N_cat, D]
 
-        if self.column_transformer is not None:
-            token_seq = self.column_transformer(token_seq)    # [B, N_cols, D]
+        # pool_query 作为 Q，all_seq 作为 KV：一次 cross-attn，无 self-attn
+        q  = self.pool_norm_q(self.pool_query.expand(B, -1, -1))   # [B, 1, D]
+        kv = self.pool_norm_kv(all_seq)                            # [B, N_total, D]
+        pool_out, _ = self.pool_attn(q, kv, kv)                   # [B, 1, D]
 
-        # Token 均值聚合 → 单一隐向量
-        h = token_seq[:,0]                            
+        h = (self.pool_query.expand(B, -1, -1) + pool_out).squeeze(1)  # [B, D] 残差
 
         # 注入标签信息
-        h = h + self.label_to_hidden(y_raw_emb)
-        h = self.proj_fuse(h)
+        #h = h + self.label_to_hidden(y_raw_emb)
+        h_shared = self.proj_fuse(h)
 
-        # ── MLP 残差主干 ──────────────────────────────────────────────
-        for layer in self.layers:
-            h = layer(h, emb)
+        # 1. 数值分支前向
+        out_n = torch.empty((B, 0), device=x_in.device)
+        if self.num_backbone is not None:
+            h_num = h_shared.clone()
+            for layer in self.num_backbone:
+                h_num = layer(h_num, emb)
+            out_n = self.out_num(h_num)
 
-        # ── 输出头 ────────────────────────────────────────────────────
-        if self.num_numerical > 0:
-            out_n = self.out_num(h)
-        else:
-            out_n = torch.empty((B, 0), device=x_in.device)
+        # 2. 分类分支前向
+        out_c_list = []
+        if self.cat_backbone is not None:
+            h_cat = h_shared.clone()
+            for layer in self.cat_backbone:
+                h_cat = layer(h_cat, emb)
+            out_c_list = [head(h_cat) for head in self.out_cat]
 
-        out_c_list = [head(h) for head in self.out_cat]
+
         out_c = (
             torch.cat(out_c_list, dim=-1)
             if out_c_list

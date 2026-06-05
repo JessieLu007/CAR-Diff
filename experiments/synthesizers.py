@@ -73,7 +73,7 @@ class MedSynth:
             df_train: pd.DataFrame,
             df_val: Optional[pd.DataFrame] = None,
     ):
-        #task = self.t_cfg.task
+        task = self.t_cfg.task
         self.df_train = df_train
         self.original_columns = df_train.columns.tolist()
 
@@ -143,7 +143,9 @@ class MedSynth:
         # 创建并训练 diffusion
         # -------------------------------------------------
         self.diffusion = MedAGDiffusion(
-            model_config=self.m_cfg,
+            model_cfg = self.m_cfg,
+            train_cfg = self.t_cfg,
+            sampling_cfg = self.s_cfg,
             denoise_class=TabMLPDenoise,
         )
 
@@ -151,7 +153,7 @@ class MedSynth:
             train_dataloader=train_loader,
             val_dataloader=val_loader,
             meta_info=meta_info,
-            train_config=self.t_cfg,
+            #train_config=self.t_cfg,
         )
 
     # =====================================================
@@ -159,7 +161,6 @@ class MedSynth:
     # =====================================================
     def generate(self, target_class: int = 1) -> pd.DataFrame:
         assert self.diffusion is not None, "请先 fit()"
-
         # -------------------------------------------------
         # 决定生成数量
         # -------------------------------------------------
@@ -179,14 +180,14 @@ class MedSynth:
         # diffusion 返回原始 tensor
         # -------------------------------------------------
         raw_tensor = self.diffusion.generate(
-            sampling_config=temp_cfg,
+            sampling_cfg=temp_cfg,
             y_cond=target_class,
         )
 
         # -------------------------------------------------
         # 逆变换：tensor → 原始量纲 DataFrame
         # -------------------------------------------------
-        df_gen = self.processor.inverse_transform(raw_tensor.numpy())
+        df_gen = self.processor.inverse_transform(raw_tensor.detach().cpu().numpy())
 
         # -------------------------------------------------
         # 后处理：按 task 补回 target_col
@@ -268,6 +269,7 @@ class MedSynth:
     # =====================================================
     # 私有：构建 DataLoader
     # =====================================================
+    
     def _build_dataloader(
             self,
             df_features: pd.DataFrame,

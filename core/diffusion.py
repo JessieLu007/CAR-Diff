@@ -13,7 +13,7 @@ from .utils import extract, index_to_log_onehot, log_1_min_a, log_add_exp, ohe_t
 from configs.experiment_configs import ModelConfig, TrainingConfig, SamplingConfig
 
 from .num_loss import compute_numerical_loss
-from .cat_loss import compute_categorical_loss
+from .cat_loss import compute_categorical_loss, MarginalEMATracker
 from .diff_schedules import DiffusionScheduleMixin
 from .diff_sampling import sample_core
 from .diff_training import train_loop
@@ -53,17 +53,25 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         - generate() 返回原始 tensor，逆变换与列补全由调用方负责
     """
 
-    def __init__(self, model_config: ModelConfig, denoise_class):
+    def __init__(
+            self, 
+            model_cfg: ModelConfig,
+            train_cfg: TrainingConfig,
+            sampling_cfg: SamplingConfig,
+            denoise_class
+            ):
         super().__init__()
-        self.cfg = model_config
+        self.model_cfg = model_cfg
+        self.train_cfg = train_cfg
+        self.sampling_cfg = sampling_cfg
+
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        self.num_timesteps = self.cfg.num_timesteps
         self.denoise_class = denoise_class
         self._denoise_fn = None
 
         # 初始化扩散 Schedule Buffers
-        self._init_diffusion_buffers(self.num_timesteps)
+        self._init_diffusion_buffers(self.model_cfg.num_timesteps)
 
         # 索引0为num，1为cat，用来调节损失权重
         self.log_vars = nn.Parameter(torch.zeros(2))
@@ -96,7 +104,6 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         train_dataloader: DataLoader,
         val_dataloader: Optional[DataLoader],
         meta_info: dict,
-        train_config: TrainingConfig,
     ):
         """
         参数：
@@ -106,7 +113,6 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
                                  由调用方（MedSynth）负责构建
             train_config      —— 训练超参数
         """
-        self.train_cfg = train_config
         self.meta_info = meta_info
         self.num_numerical_features = meta_info['num_numerical']
         self.num_classes = meta_info['num_classes']
@@ -114,17 +120,25 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
 
         self._init_class_expanded()
 
+        # minority 模式下提高 dropout, 一直过拟合
+        is_minority = self.train_cfg.task in ('minority_uncond', 'minority_cond')
+        dropout = 0.2 if is_minority else self.model_cfg.dropout
+
         self._denoise_fn = self.denoise_class(
+            task=self.train_cfg.task,
             info=self.meta_info,
-            dim_t=self.cfg.dim_t,
-            dim_hidden=self.cfg.dim_hidden,
-            num_layers=self.cfg.num_layers,
-            dropout=self.cfg.dropout,
+            dim_t=self.model_cfg.dim_t,
+            dim_hidden=self.model_cfg.dim_hidden,
+            num_layers=self.model_cfg.num_layers,
+            dropout=dropout,
         ).to(self.device)
+
+        self.to(self.device)
 
         self._count_parameters(self._denoise_fn)
 
-        train_loop(self, train_dataloader, val_dataloader, train_config)
+        # train_cfg传递给train_loop
+        train_loop(self, train_dataloader, val_dataloader, self.train_cfg)
 
         return self
 
@@ -136,7 +150,7 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
     @torch.no_grad()
     def generate(
         self,
-        sampling_config: SamplingConfig,
+        sampling_cfg: SamplingConfig,
         y_cond: int = None,
         return_latent: bool = False,
     ) -> torch.Tensor:
@@ -144,16 +158,18 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         返回 shape=(n_samples, n_features) 的原始 tensor。
         逆变换与列补全由调用方（MedSynth）负责。
         """
+
         self._denoise_fn.eval()
-        assert sampling_config.num_samples is not None, "SamplingConfig.num_samples 未设置"
+        assert sampling_cfg.num_samples is not None, "SamplingConfig.num_samples 未设置"
 
         # full_data 模式下模型无视外部条件，一律使用 null
         if self.train_cfg.task == "full_data":
-            y_for_sampling = self.cfg.null_class_idx
+            y_for_sampling = self.model_cfg.null_class_idx
         else:
-            y_for_sampling = y_cond if y_cond is not None else self.cfg.null_class_idx
+            y_for_sampling = y_cond if y_cond is not None else self.model_cfg.null_class_idx
 
-        raw = sample_core(self, sampling_config.num_samples, y_for_sampling, cfg=sampling_config)
+        # 将sampling_cfg传递给sample相关函数
+        raw = sample_core(self, sampling_cfg.num_samples, y_for_sampling)
 
         self._denoise_fn.train()
 
@@ -167,9 +183,9 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
     # 核心数学模块
     # =========================================================
 
-    def compute_loss(self, batch_x, batch_y):
+    def compute_loss(self, batch_x, batch_y, marginal_tracker=None):
         b = batch_x.shape[0]
-        t = torch.randint(0, self.num_timesteps, (b,), device=self.device).long()
+        t = torch.randint(0, self.model_cfg.num_timesteps, (b,), device=self.device).long()
 
         y_cond = batch_y.clone()
 
@@ -177,7 +193,7 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         # joint / uncond 范式：标签已在路由阶段全部置为 null，此处保持原值即可
         if self.train_cfg.task == "minority_cond":
             drop_mask = torch.rand((b,), device=self.device) < self.train_cfg.uncond_p
-            y_cond[drop_mask] = self.cfg.null_class_idx
+            y_cond[drop_mask] = self.model_cfg.null_class_idx
 
         x_num = batch_x[:, :self.num_numerical_features].float()
 
@@ -201,8 +217,17 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         x_in = torch.cat([x_num_t, log_x_cat_t.exp()], dim=1)
         model_out = self._denoise_fn(x_in, t, y_cond)
 
-        loss_num, loss_corr = compute_numerical_loss(self, x_num, x_num_t, model_out, t, noise, self.cfg.prediction_type)
-        loss_cat = compute_categorical_loss(self, x_cat, model_out, use_basic=self.train_cfg.use_basic)
+        loss_num, loss_corr = compute_numerical_loss(self, x_num, x_num_t, model_out, t, noise)
+
+        if marginal_tracker is not None:
+            marginal_tracker.update(model_out, self.slices_for_classes)
+        loss_cat = compute_categorical_loss(
+            self, 
+            x_cat, 
+            model_out, 
+            timesteps = t, 
+            use_basic  = self.model_cfg.use_basic, 
+            marginal_tracker=marginal_tracker,)
 
         # 使用不确定性加权公式：Loss = (1 / e^log_var) * L + log_var
         prec_num = torch.exp(-self.log_vars[0])

@@ -20,9 +20,9 @@ def distance_correlation(x):
     dVar_prod = torch.sqrt(torch.clamp(dVar_sq.unsqueeze(0) * dVar_sq.unsqueeze(1), min=1e-8) + 1e-8)
     return torch.sqrt(torch.clamp(dCov_sq / dVar_prod, min=1e-8))
 
-def compute_numerical_loss(model, x_num, x_num_t, model_out, t, noise, prediction_type):
+def compute_numerical_loss(model, x_num, x_num_t, model_out, t, noise):
     num_feats = model.num_numerical_features
-    prediction_type = prediction_type
+    prediction_type = model.model_cfg.prediction_type
 
     if prediction_type == 'x0':
         x0_pred = model_out[:, :num_feats]
@@ -44,8 +44,8 @@ def compute_numerical_loss(model, x_num, x_num_t, model_out, t, noise, predictio
         x0_pred = sqrt_recip * x_num_t - sqrt_recipml * model_num_out
             
         loss_corr = 0.0
-        if batch_size > 1 and num_feats > 1 and model.cfg.corr_weight > 0:
-            threshold = int(model.num_timesteps * model.cfg.corr_t_ratio)
+        if batch_size > 1 and num_feats > 1 and model.model_cfg.corr_weight > 0:
+            threshold = int(model.model_cfg.num_timesteps * model.model_cfg.corr_t_ratio)
             valid_mask = t < threshold
 
             if valid_mask.sum() > 1:
@@ -54,7 +54,7 @@ def compute_numerical_loss(model, x_num, x_num_t, model_out, t, noise, predictio
                 loss_corr = F.mse_loss(corr_pred, corr_real)
 
         # ========== 新增：对预测latent x0的分布做一个极弱正则 ==========
-        if getattr(model.train_cfg, 'use_normal_reg', False):
+        if getattr(model.model_cfg, 'use_normal_reg', False):
             # 只在中等噪声区间做一点约束，避免极端阶段干扰
             t_float = t.float() / (model.num_timesteps - 1)
             mid_mask = (t_float >= 0.2) & (t_float <= 0.5)

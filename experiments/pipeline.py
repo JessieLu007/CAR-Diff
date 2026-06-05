@@ -167,9 +167,9 @@ def run_pipeline(
             # =====================================================
             sample_start = time.time()
 
-            global_minority_class = target_minority_class
-
-            df_fake = synthesizer.generate(target_class=global_minority_class)
+            #global_minority_class = target_minority_class
+            
+            df_fake = synthesizer.generate(target_class=target_minority_class)
 
             sample_time = time.time() - sample_start
             print(f"✅ 数据生成完成 | 用时: {sample_time:.2f} sec")
@@ -269,6 +269,98 @@ def run_pipeline(
 
     gc.collect()
     return results
+
+
+def run_generation_only_pipeline(
+        save_path: str, 
+        target_minority_class: int=1,
+        cat_cols: list = None,
+        ml_mode: str = "augmentation",
+        target_col: str = "label",
+) :
+    """
+    仅加载已保存的模型，并进行采样的pipeline
+    """
+    start_time = time.time()
+    save_path_obj = Path(save_path)
+
+    # 1. 读取保存的实验配置
+    config_path = save_path_obj / "experiment_config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(f"未找到配置文件： {config_path}")
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
+        saved_meta = json.load(f)
+
+    print("=" * 60)
+    print(f"📂 载入实验目录: {save_path}")
+    print("=" * 60)
+
+    # 2. 载入或重建Synthesizer
+    print("⏳ 正在载入已保存的模型...")
+
+    # 方式 A：如果 MedSynth 支持直接通过静态/类方法 load 载入
+    try:
+        synthesizer = MedSynth.load(save_path)
+    except AttributeError:
+        # 方式 B：如果需要先传入原配置实例化，再调用实例方法 load
+        # 我们使用保存的配置进行基础恢复
+        from copy import deepcopy
+        from experiments.environment import make_default_experiment_config
+        
+        # 简单从保存的 meta 中重建配置结构
+        exp_cfg = make_default_experiment_config().with_overrides(
+            model=saved_meta["experiment_config"]["model"],
+            training=saved_meta["experiment_config"]["training"],
+            sampling=saved_meta["experiment_config"]["sampling"],
+        )
+        # 重新实例化后，载入权重
+        synthesizer = MedSynth(target_col, cat_cols, exp_cfg)
+        synthesizer.load(save_path)
+
+    print("✅ 模型载入完成")
+
+    # 3. 读取保存的插补后参考数据集（用于后续评估）
+    print("💾 正在读取保存的参考数据集...")
+    df_train_imputed = pd.read_csv(save_path_obj / "real_train_imputed.csv")
+    df_test_imputed  = pd.read_csv(save_path_obj / "real_test_imputed.csv")
+
+    # 4. 生成合成数据
+    print("🎲 正在生成合成数据...")
+    sample_start = time.time()
+    
+    df_fake = synthesizer.generate(target_class=target_minority_class)
+    
+    sample_time = time.time() - sample_start
+    print(f"✅ 数据生成完成 | 用时: {sample_time:.2f} sec")
+
+    # 5. 保存新的合成数据 (另存为新文件，避免覆盖原始数据)
+    new_fake_path = save_path_obj / f"fake_generated_only_{datetime.now().strftime('%m%d_%H%M%S')}.csv"
+    df_fake.to_csv(new_fake_path, index=False)
+    print(f"💾 新合成数据已保存至: {new_fake_path}")
+
+    # 6. 对新生成的数据进行评估
+    if cat_cols is not None:
+        print("\n📊 开始评估新生成的合成数据...")
+        evaluator = TabularEvaluator(
+            df_real_train=df_train_imputed,
+            df_fake=df_fake,
+            df_real_test=df_test_imputed,
+            target_col=target_col,
+            cat_cols=cat_cols,
+            ml_mode=ml_mode,
+        )
+
+        stat_res    = evaluator.evaluate_statistical_fidelity()
+        privacy_res = evaluator.evaluate_privacy()
+        cat_res     = evaluator.evaluate_categorical_proportions()
+
+        print(stat_res)
+        print(privacy_res)
+        print(cat_res)
+
+    print("\n✅ 仅生成实验流程完成")
+    return df_fake
 
 
 # =========================================================

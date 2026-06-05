@@ -30,12 +30,17 @@ class ModelConfig:
     prediction_type: str = 'eps' # 默认eps,可切换为x0,此时直接预测x0而非噪声epsilon
 
     # 损失组件
+    #focal_mode: str = "adaptive"  # "off" | "fixed" | "adaptive"
+    #use_marginal_align: bool = True 
+    use_basic: bool = True
+    use_adaptive_focal: bool = False
+    use_normal_reg: bool = False
     logit_adj_tau: float = 0.3          # LA loss先验修正强度
-    use_adaptive_focal: bool = True     # 是否使用抵抗饥饿的自适应 Focal Loss
-    gma_loss_weight: float = 0.5        # Global Marginal Alignment(GMA) 权重
+    gamma_base: float = 1.0             # focal loss中的gamma_base设置
+    focal_alpha_scale: float = 1.0
+    gma_loss_weight: float = 0.1        # Global Marginal Alignment(GMA) 权重
     corr_weight: float = 0.0            # 相关性权重损失
     corr_t_ratio: float = 0.2           # 相关性触发的噪声阶段比率
-    gamma_base: float = 1.0             # focal loss中的gamma_base设置
 
     # CFG 与后验参数
     null_class_idx: int = 2
@@ -54,8 +59,6 @@ class TrainingConfig:
     lr: float = 1e-4
     uncond_p: float = 0.1   # CFG 空条件丢弃率（仅 *_cond 范式生效）
     patience: int = 20
-    use_normal_reg: bool = False
-    use_basic: bool = True # 在计算分类属性损失时，是否启用focal_loss, use_basic=True时使用简单的CE，不使用focal_loss
 
     # ------------------------------------------------------------------
     # task：训练范式，调用方始终传入全量数据，内部自动路由
