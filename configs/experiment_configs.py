@@ -13,9 +13,9 @@ class DataConfig:
 
 @dataclass
 class PipelineConfig:
-    random_state: int = 0
+    # 可以设置为[0,1,2,3,4]，已保存这几个的补全缺失值数据集用于对比训练
+    random_state: int = 0  
     save_base_dir: str = "results"
-
 
 @dataclass
 class ModelConfig:
@@ -27,13 +27,12 @@ class ModelConfig:
     num_timesteps: int = 1000
 
     # 控制模型prediction模式
-    prediction_type: str = 'eps' # 默认eps,可切换为x0,此时直接预测x0而非噪声epsilon
+    # 默认eps,可切换为x0,此时直接预测x0而非噪声epsilon，当前模式下eps效果最好，暂时不考虑x0
+    prediction_type: str = 'eps' 
 
     # 损失组件
-    #focal_mode: str = "adaptive"  # "off" | "fixed" | "adaptive"
-    #use_marginal_align: bool = True 
-    use_basic: bool = True
-    use_adaptive_focal: bool = False
+    focal_mode: str = "adaptive"  # "off" | "fixed" | "adaptive"
+    use_marginal_align: bool = True 
     use_normal_reg: bool = False
     logit_adj_tau: float = 0.3          # LA loss先验修正强度
     gamma_base: float = 1.0             # focal loss中的gamma_base设置

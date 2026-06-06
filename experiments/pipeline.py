@@ -14,7 +14,6 @@ from dataclasses import asdict
 from sklearn.model_selection import train_test_split
 from evaluation.core_evaluator import TabularEvaluator
 from experiments.synthesizers import MedSynth
-from evaluation.tool_stability import StabilityEvaluator
 
 
 class Tee:
@@ -39,7 +38,6 @@ def run_pipeline(
         dataset_name: str,
         synthesizer: MedSynth,
         ml_mode: str,
-        #split_seed: int, # 选择哪个seed下的划分数据集进行实验
         target_minority_class: int = 1,
         train_ratio: float = 0.7,
         val_ratio: float = 0.1,
@@ -90,7 +88,7 @@ def run_pipeline(
             print(f"📁 保存目录: {save_path}")
             print("=" * 60)
 
-             # =====================================================
+            # =====================================================
             # 数据划分
             # =====================================================
             unique_classes = df_all[target_col].nunique()
@@ -113,15 +111,6 @@ def run_pipeline(
                 random_state=exp_cfg.pipeline.random_state + 42,
             )
 
-            # =====================================================
-            # 数据划分,直接读取事先划分好、且已经补全缺失值的数据
-            # =====================================================
-            '''loc = Path(f"../splitted_data/seed_{split_seed}/{dataset_name}")
-
-            df_train = pd.read_csv(loc / "real_train_imputed.csv")
-            df_val = pd.read_csv(loc / "real_valid_imputed.csv")
-            df_test = pd.read_csv(loc / "real_test_imputed.csv")'''
-
             print(f"\n📊 数据划分: 训练集: {len(df_train)}  验证集: {len(df_val)}  测试集: {len(df_test)}")
 
             # =====================================================
@@ -136,15 +125,12 @@ def run_pipeline(
                 df_train_ref = df_train
                 df_val_ref   = df_val
 
-
             # =====================================================
             # 模型训练
             # =====================================================
             print("⏳ 开始训练模型...")
             train_start = time.time()
-
             synthesizer.fit(df_train_ref, df_val=df_val_ref)
-
             train_time = time.time() - train_start
             print(f"✅ 训练完成 | 用时: {train_time / 60:.2f} min")
 
@@ -157,7 +143,6 @@ def run_pipeline(
             # 生成插补后可读数据集（与训练预处理完全一致）
             # =====================================================
             print("🔧 生成插补后参考数据集...")
-
             df_train_imputed = synthesizer.processor.transform_readable(df_train)
             df_val_imputed   = synthesizer.processor.transform_readable(df_val)
             df_test_imputed  = synthesizer.processor.transform_readable(df_test)
@@ -166,11 +151,7 @@ def run_pipeline(
             # 生成合成数据
             # =====================================================
             sample_start = time.time()
-
-            #global_minority_class = target_minority_class
-            
             df_fake = synthesizer.generate(target_class=target_minority_class)
-
             sample_time = time.time() - sample_start
             print(f"✅ 数据生成完成 | 用时: {sample_time:.2f} sec")
 
@@ -179,7 +160,7 @@ def run_pipeline(
             # =====================================================
             print("💾 保存 Loss History...")
 
-            loss_history = synthesizer.loss_history   # 通过属性代理访问，不穿透到 diffusion
+            loss_history = synthesizer.loss_history
             n = len(loss_history.train_total)
             loss_df = pd.DataFrame({
                 "train_total": loss_history.train_total,
@@ -269,129 +250,3 @@ def run_pipeline(
 
     gc.collect()
     return results
-
-
-def run_generation_only_pipeline(
-        save_path: str, 
-        target_minority_class: int=1,
-        cat_cols: list = None,
-        ml_mode: str = "augmentation",
-        target_col: str = "label",
-) :
-    """
-    仅加载已保存的模型，并进行采样的pipeline
-    """
-    start_time = time.time()
-    save_path_obj = Path(save_path)
-
-    # 1. 读取保存的实验配置
-    config_path = save_path_obj / "experiment_config.json"
-    if not config_path.exists():
-        raise FileNotFoundError(f"未找到配置文件： {config_path}")
-    
-    with open(config_path, 'r', encoding='utf-8') as f:
-        saved_meta = json.load(f)
-
-    print("=" * 60)
-    print(f"📂 载入实验目录: {save_path}")
-    print("=" * 60)
-
-    # 2. 载入或重建Synthesizer
-    print("⏳ 正在载入已保存的模型...")
-
-    # 方式 A：如果 MedSynth 支持直接通过静态/类方法 load 载入
-    try:
-        synthesizer = MedSynth.load(save_path)
-    except AttributeError:
-        # 方式 B：如果需要先传入原配置实例化，再调用实例方法 load
-        # 我们使用保存的配置进行基础恢复
-        from copy import deepcopy
-        from experiments.environment import make_default_experiment_config
-        
-        # 简单从保存的 meta 中重建配置结构
-        exp_cfg = make_default_experiment_config().with_overrides(
-            model=saved_meta["experiment_config"]["model"],
-            training=saved_meta["experiment_config"]["training"],
-            sampling=saved_meta["experiment_config"]["sampling"],
-        )
-        # 重新实例化后，载入权重
-        synthesizer = MedSynth(target_col, cat_cols, exp_cfg)
-        synthesizer.load(save_path)
-
-    print("✅ 模型载入完成")
-
-    # 3. 读取保存的插补后参考数据集（用于后续评估）
-    print("💾 正在读取保存的参考数据集...")
-    df_train_imputed = pd.read_csv(save_path_obj / "real_train_imputed.csv")
-    df_test_imputed  = pd.read_csv(save_path_obj / "real_test_imputed.csv")
-
-    # 4. 生成合成数据
-    print("🎲 正在生成合成数据...")
-    sample_start = time.time()
-    
-    df_fake = synthesizer.generate(target_class=target_minority_class)
-    
-    sample_time = time.time() - sample_start
-    print(f"✅ 数据生成完成 | 用时: {sample_time:.2f} sec")
-
-    # 5. 保存新的合成数据 (另存为新文件，避免覆盖原始数据)
-    new_fake_path = save_path_obj / f"fake_generated_only_{datetime.now().strftime('%m%d_%H%M%S')}.csv"
-    df_fake.to_csv(new_fake_path, index=False)
-    print(f"💾 新合成数据已保存至: {new_fake_path}")
-
-    # 6. 对新生成的数据进行评估
-    if cat_cols is not None:
-        print("\n📊 开始评估新生成的合成数据...")
-        evaluator = TabularEvaluator(
-            df_real_train=df_train_imputed,
-            df_fake=df_fake,
-            df_real_test=df_test_imputed,
-            target_col=target_col,
-            cat_cols=cat_cols,
-            ml_mode=ml_mode,
-        )
-
-        stat_res    = evaluator.evaluate_statistical_fidelity()
-        privacy_res = evaluator.evaluate_privacy()
-        cat_res     = evaluator.evaluate_categorical_proportions()
-
-        print(stat_res)
-        print(privacy_res)
-        print(cat_res)
-
-    print("\n✅ 仅生成实验流程完成")
-    return df_fake
-
-
-# =========================================================
-# 生成稳定性测试
-# =========================================================
-def run_stability_pipeline(
-        df_train: pd.DataFrame,
-        target_col: str,
-        cat_cols: list,
-        synthesizer: MedSynth,
-        num_runs: int = 5,
-):
-    print("\n" + "=" * 60)
-    print(f"🛡️ 开始生成稳定性测试 | 次数: {num_runs}")
-    print("=" * 60)
-
-    print("\n⏳ 正在训练生成模型...")
-    synthesizer.fit(df_train)
-
-    target_class = df_train[target_col].value_counts().idxmin()
-
-    print(f"\n🎲 连续生成 {num_runs} 次数据...")
-    list_of_fakes = []
-    for i in range(num_runs):
-        print(f"   ▶ 第 {i + 1} 次生成")
-        df_fake = synthesizer.generate(target_class=target_class)
-        list_of_fakes.append(df_fake)
-
-    print("\n📊 开始稳定性评估...")
-    evaluator = StabilityEvaluator(df_train, list_of_fakes, cat_cols)
-    report = evaluator.evaluate_categorical_stability()
-
-    print("\n✅ 稳定性测试完成")
-    return list_of_fakes, report

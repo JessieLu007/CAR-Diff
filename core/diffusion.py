@@ -80,43 +80,28 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
     # diffusion.py 中，_count_parameters 改为 staticmethod
     @staticmethod
     def _count_parameters(model: nn.Module) -> None:
-        total     = sum(p.numel() for p in model.parameters())        # 原来少了 ()
-        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)  # 同上
+        total     = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
         print(f"\n{'-'*45}")
         print(f"    模型参数规模")
         print(f"{'-'*45}")
         for name, module in model.named_children():
-            n = sum(p.numel() for p in module.parameters())           # 原来少了 ()
+            n = sum(p.numel() for p in module.parameters())
             print(f"    {name:<30} {n:>8,}")
-        print(f"{'-'*45}")                                            # 原来是 f"{'-'}*45"
+        print(f"{'-'*45}")
         print(f"    {'Total':<30} {total:>8,}")
         print(f"    {'Trainable':<30} {trainable:>8,}")
         print(f"{'-'*45}\n")
 
-    # =========================================================
-    # 模型拟合
-    # 调用方负责：数据路由、预处理、DataLoader 构建、meta_info 准备
-    # =========================================================
-
-    def fit(
-        self,
-        train_dataloader: DataLoader,
-        val_dataloader: Optional[DataLoader],
-        meta_info: dict,
-    ):
+    def build_network(self, meta_info: dict)-> "MedAGDiffusion":
         """
-        参数：
-            train_dataloader  —— 每个 batch 为 (x_tensor, y_tensor)
-            val_dataloader    —— 同上，可为 None
-            meta_info         —— 包含 num_numerical、num_classes、true_marginals 等
-                                 由调用方（MedSynth）负责构建
-            train_config      —— 训练超参数
+        仅初始化网络结构（不训练)
         """
-        self.meta_info = meta_info
+        self.meta_info              = meta_info
         self.num_numerical_features = meta_info['num_numerical']
-        self.num_classes = meta_info['num_classes']
-        self.true_marginals = meta_info['true_marginals']
+        self.num_classes            = meta_info['num_classes']
+        self.true_marginals         = meta_info['true_marginals']
 
         self._init_class_expanded()
 
@@ -135,9 +120,29 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
 
         self.to(self.device)
 
-        self._count_parameters(self._denoise_fn)
+        return self
 
-        # train_cfg传递给train_loop
+    # =========================================================
+    # 模型拟合
+    # 调用方负责：数据路由、预处理、DataLoader 构建、meta_info 准备
+    # =========================================================
+    def fit(
+        self,
+        train_dataloader: DataLoader,
+        val_dataloader: Optional[DataLoader],
+        meta_info: dict,
+    ):
+        """
+        参数：
+            train_dataloader  —— 每个 batch 为 (x_tensor, y_tensor)
+            val_dataloader    —— 同上，可为 None
+            meta_info         —— 包含 num_numerical、num_classes、true_marginals 等
+                                 由调用方（MedSynth）负责构建
+            train_config      —— 训练超参数
+        """
+        self.build_network(meta_info)
+        self._count_parameters(self._denoise_fn)
+        
         train_loop(self, train_dataloader, val_dataloader, self.train_cfg)
 
         return self
@@ -146,7 +151,6 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
     # 采样生成
     # 返回原始 tensor，不做逆变换，不补 target_col
     # =========================================================
-
     @torch.no_grad()
     def generate(
         self,
@@ -158,7 +162,6 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         返回 shape=(n_samples, n_features) 的原始 tensor。
         逆变换与列补全由调用方（MedSynth）负责。
         """
-
         self._denoise_fn.eval()
         assert sampling_cfg.num_samples is not None, "SamplingConfig.num_samples 未设置"
 
@@ -226,7 +229,7 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
             x_cat, 
             model_out, 
             timesteps = t, 
-            use_basic  = self.model_cfg.use_basic, 
+            #use_basic  = self.model_cfg.use_basic, 
             marginal_tracker=marginal_tracker,)
 
         # 使用不确定性加权公式：Loss = (1 / e^log_var) * L + log_var

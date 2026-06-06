@@ -53,7 +53,7 @@ def compute_numerical_loss(model, x_num, x_num_t, model_out, t, noise):
                 corr_pred = distance_correlation(x0_pred[valid_mask])
                 loss_corr = F.mse_loss(corr_pred, corr_real)
 
-        # ========== 新增：对预测latent x0的分布做一个极弱正则 ==========
+        # ========== 对预测latent x0的分布做一个极弱正则 ==========
         if getattr(model.model_cfg, 'use_normal_reg', False):
             # 只在中等噪声区间做一点约束，避免极端阶段干扰
             t_float = t.float() / (model.num_timesteps - 1)

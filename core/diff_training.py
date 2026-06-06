@@ -1,22 +1,17 @@
 # core/diff_training.py
 import math
 import torch
-import numpy as np
-import matplotlib
 import matplotlib.pyplot as plt
-
 from pathlib import Path
 from datetime import datetime
 from torch.optim.lr_scheduler import LambdaLR
 
 from .cat_loss import MarginalEMATracker
-#from core.cat_loss import clear_precomputed_cache
 
 
 # ----------------------------------------------------------------
 # Loss 历史记录器
 # ----------------------------------------------------------------
-
 class LossHistory:
     """轻量loss记录容器，新增对验证损失的记录和最佳模型追踪"""
 
@@ -42,11 +37,7 @@ class LossHistory:
 
     def plot(self, save_path: str | None = None, show: bool = False) -> None:
         """
-        绘制loss曲线并保存。默认不弹窗
-
-        参数：
-            save_path: 图片保存路径，None则自动按时间戳命名
-            show     : 是否调用plt.show()(本地调试时设为True)
+        绘制loss曲线并保存，默认不弹窗
         """
         if not self.train_total:
             print("没有可绘制的loss数据")
@@ -84,7 +75,6 @@ class LossHistory:
         if save_path is None:
             ts          = datetime.now().strftime("%m%d_%H%M%S")
             save_path   = f"loss_curve_{ts}.png"
-
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Loss曲线已保存至：{save_path}")
@@ -101,7 +91,6 @@ class LossHistory:
             f"最优监控: {self.best_monitor_loss:.4f} (Epoch {self.best_epoch + 1}) | "
             f"末尾训练Loss: {self.train_total[-1]:.4f}"
         )
-
 
 # ----------------------------------------------------------------
 # 学习率调度 
@@ -127,7 +116,6 @@ def get_warmup_cosine_scheduler(
         return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
 
     return LambdaLR(optimizer, lr_lambda)
-
 
 # ----------------------------------------------------------------
 # 标签平滑（可选，用于minority_cond模式）
@@ -207,18 +195,15 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
             print(f"⚠️  验证集仅 {val_size} 条，强制使用 val 监控，EMA 平滑加强至 {EMA_ALPHA}")
         else:
             EMA_ALPHA = 0.1
-
     else:
         USE_VAL_MONITOR = False
         EMA_ALPHA = 0.1
 
     # ----- MarginalEMATracker ----------------------------
-    '''marginal_tracker = MarginalEMATracker(
+    marginal_tracker = MarginalEMATracker(
         true_marginals=model.true_marginals,
         momentum=0.99,
-    ).to(model.device)'''
-
-    marginal_tracker = None
+    ).to(model.device)
     
     # —————训练状态初始化—————————————————————————————————————————————
     history             = LossHistory()
@@ -242,7 +227,6 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
                 p.requires_grad_(False)
         print(f" Phase 1 (前{PHASE1_EPOCHS} epochs): 冻结数值编码器，优先稳定类别表示")
 
-    
     # =======================================================================
     # 训练主循环
     # =======================================================================

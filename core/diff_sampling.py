@@ -36,7 +36,6 @@ def sample_core(
     model,
     num_samples : int,
     y_cond      : int,
-    #sampling_cfg         : SamplingConfig,
 ) -> torch.Tensor:
     """
     DDPM 逆扩散采样主循环。
@@ -157,16 +156,11 @@ def sample_core(
             logits = model_cat_out[:, ix]
             K      = logits.shape[1]
 
-            # original A.1 
             idx    = gumbel_sample(logits, temperature_cat)
             onehot = F.one_hot(idx, num_classes=K).float()
 
             if torch.rand(1).item() < 1e-4:
                 print("sample distribution:", torch.bincount(idx, minlength=logits.shape[1]) / idx.shape[0])
-
-            # 替换 A.1
-            '''probs = F.softmax(logits / temperature_cat, dim=1)
-            onehot = probs'''
 
             if i > 0:
                 # 软化：与训练前向加噪一致，在 one-hot 上叠加均匀噪声
