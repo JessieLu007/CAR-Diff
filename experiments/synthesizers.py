@@ -97,7 +97,7 @@ class MedSynth:
             cat_cols=model_cat_cols,
             num_transform_method=self.d_cfg.num_transform_method,
             cat_encoding_method=self.d_cfg.cat_encoding_method,
-            random_state=self.p_cfg.random_state,
+            random_state=self.p_cfg.random_seed,
         )
         self.processor.fit(df_model_train)
 

@@ -162,8 +162,8 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
     # Phase 1：冻结数值编码器，优先稳定类别表示
     # Phase 2：解冻全部参数，联合微调
     use_two_phase = getattr(train_cfg, 'use_two_phase', False)
-    PHASE1_EPOCHS = getattr(train_cfg, 'phase1_epochs', 100)
-    in_phase1     = use_two_phase and is_minority
+    PHASE1_EPOCHS = getattr(train_cfg, 'phase1_epochs', 50)
+    in_phase1     = use_two_phase #and is_minority
 
     # ------ Checkpoint Ensemble 设置 -------------
     # minority 模式下保存val loss最优的K个checkpoint， 训练结束后做权重平均
@@ -191,7 +191,7 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
     if val_dataloader is not None and val_size >0:
         USE_VAL_MONITOR = True # 只要有验证集就用
         if val_size < 200:
-            EMA_ALPHA = 0.15  # 更平滑，抑制小验证集的噪声
+            EMA_ALPHA = 0.25  # 更平滑，抑制小验证集的噪声
             print(f"⚠️  验证集仅 {val_size} 条，强制使用 val 监控，EMA 平滑加强至 {EMA_ALPHA}")
         else:
             EMA_ALPHA = 0.1
@@ -223,9 +223,9 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
     # ————————Phase 1 初始化（可选）————————————————————————————————————
     if in_phase1:
         for name, p in model._denoise_fn.named_parameters():
-            if 'num_col_encoders' in name or 'num_transformer' in name:
+            if 'cat_col_encoders' in name or 'cat_transformer' in name:
                 p.requires_grad_(False)
-        print(f" Phase 1 (前{PHASE1_EPOCHS} epochs): 冻结数值编码器，优先稳定类别表示")
+        print(f" Phase 1 (前{PHASE1_EPOCHS} epochs): 冻结分类编码器，优先稳定数值表示")
 
     # =======================================================================
     # 训练主循环
@@ -239,7 +239,7 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
             for p in model._denoise_fn.parameters():
                 p.requires_grad_(True)
             for pg in optimizer.param_groups:
-                pg['lr'] *= 0.5 # 解冻后降低lr,防止震荡
+                pg['lr'] *= 0.75 # 解冻后降低lr,防止震荡
             in_phase1 = False
             print(f" Phase 2 (Epoch {epoch+1}): 解冻所有参数，联合微调， lr x 0.5")
 
@@ -335,7 +335,7 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
             raw_monitor if ema_monitor_loss is None
             else EMA_ALPHA * raw_monitor + (1 - EMA_ALPHA) * ema_monitor_loss
         )
-        current_monitor_loss = ema_monitor_loss
+        current_monitor_loss = avg_train_loss
 
         # ———————————————— Checkpoint Ensemble 候选池更新——————————————————————————————————————————
         current_state = {k: v.cpu().clone() for k, v in model._denoise_fn.state_dict().items()}

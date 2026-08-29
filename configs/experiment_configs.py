@@ -14,7 +14,7 @@ class DataConfig:
 @dataclass
 class PipelineConfig:
     # 可以设置为[0,1,2,3,4]，已保存这几个的补全缺失值数据集用于对比训练
-    random_state: int = 0  
+    random_seed: int = 0  
     save_base_dir: str = "results"
 
 @dataclass
@@ -55,6 +55,7 @@ class TrainingConfig:
     """训练数据范围与建模范式控制"""
     batch_size: int = 256
     epochs: int = 1000
+    use_two_phase: bool = False
     lr: float = 1e-4
     uncond_p: float = 0.1   # CFG 空条件丢弃率（仅 *_cond 范式生效）
     patience: int = 20

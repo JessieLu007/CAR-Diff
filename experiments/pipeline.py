@@ -72,7 +72,7 @@ def run_pipeline(
         f"h{dim_hidden}_t{num_timesteps}_{num_layers}_"
         f"{timestamp}"
     )
-    save_path = os.path.join(dataset_dir, exp_name)
+    save_path = os.path.join(dataset_dir, f'seed_{exp_cfg.pipeline.random_seed}', exp_name)
     os.makedirs(save_path, exist_ok=True)
 
     # =====================================================
@@ -98,7 +98,7 @@ def run_pipeline(
                 df_all,
                 test_size=test_ratio,
                 stratify=stratify_col,
-                random_state=exp_cfg.pipeline.random_state,
+                random_state=exp_cfg.pipeline.random_seed,
             )
 
             stratify_col_temp = df_temp[target_col] if unique_classes > 1 else None
@@ -108,7 +108,7 @@ def run_pipeline(
                 df_temp,
                 test_size=val_ratio_in_temp,
                 stratify=stratify_col_temp,
-                random_state=exp_cfg.pipeline.random_state + 42,
+                random_state=exp_cfg.pipeline.random_seed + 42,
             )
 
             print(f"\n📊 数据划分: 训练集: {len(df_train)}  验证集: {len(df_val)}  测试集: {len(df_test)}")
@@ -200,7 +200,7 @@ def run_pipeline(
             df_val_imputed.to_csv(  os.path.join(save_path, "real_val_imputed.csv"),   index=False)
             df_test_imputed.to_csv( os.path.join(save_path, "real_test_imputed.csv"),  index=False)
 
-            df_fake.to_csv( os.path.join(save_path, "fake_full.csv"),                  index=False)
+            df_fake.to_csv( os.path.join(save_path, "synthetic_data.csv"),                  index=False)
 
             # =====================================================
             # 保存实验配置
