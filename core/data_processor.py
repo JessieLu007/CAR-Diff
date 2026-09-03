@@ -9,16 +9,8 @@ from sklearn.impute import IterativeImputer
 class TabularDataProcessor:
     """
     表格数据双向处理器：MICE 插补 + 分布映射 + 数值结构约束恢复
-
-    num_transform_method:
-        'quantile' : QuantileTransformer → 正态分布（默认，配合标准 MLP 使用）
-        'standard' : StandardScaler → 零均值单位方差
-        'none'     : 不做分布变换，保留原始数值（配合 Periodic Embedding 使用）
-
-    cat_encoding_method:
-        'label'   : LabelEncoder → 整数编码（不处理未知类别）
-        'ordinal' : OrdinalEncoder → 整数编码（未知类别 → NaN → MICE 插补）
-        'none'    : 逆变换回原始字符串标签
+    num_transform_method: 'quantile',  'standard', 'none'
+    cat_encoding_method: 'label', 'ordinal', 'none'
     """
 
     def __init__(self, num_cols, cat_cols, num_transform_method='quantile', cat_encoding_method='label', random_state=42):

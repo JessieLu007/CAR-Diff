@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from configs.experiment_configs import ExperimentConfig
 from core.data_processor import TabularDataProcessor
-from core.denoise_model import TabMLPDenoise
+from core.denoise_model_v2 import TabMLPDenoise
 from core.diffusion import MedAGDiffusion
 
 

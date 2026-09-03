@@ -199,10 +199,15 @@ class CrossAttentionBlock(nn.Module):
         self,
         q_tokens:  torch.Tensor,   # [B, Lq, D]
         kv_tokens: torch.Tensor,   # [B, Lk, D]
+        gate: torch.Tensor = None
     ) -> torch.Tensor:
         q      = self.norm_q(q_tokens)
         kv     = self.norm_kv(kv_tokens)
         out, _ = self.attn(q, kv, kv)
+
+        if gate is not None:
+            out = out * gate
+
         return self.norm_out(q_tokens + out)
 
 
@@ -283,6 +288,7 @@ class TabMLPDenoise(nn.Module):
         n_expand: int = 3,
         # 每个数值列扩展为多少个 Token（few_num_mode 生效时）
         share_decoder: bool = True,  # 新增：解码器是否共享展开层，与 v1 对齐
+        use_time_gate: bool = True,
     ):
         super().__init__()
 
@@ -292,6 +298,7 @@ class TabMLPDenoise(nn.Module):
         self.num_classes   = info['num_classes']          # list[int]
         true_marginals     = info.get('true_marginals', None)
         self.share_decoder = share_decoder
+        self.use_time_gate = use_time_gate
 
         # ── cat_loss.py 兼容接口（原始存档版本遗漏，此处补上）───────────
         self.num_numerical_features = self.num_numerical
@@ -429,6 +436,13 @@ class TabMLPDenoise(nn.Module):
         )
         self.label_emb = nn.Embedding(num_classes_cond + 1, dim_t)
 
+        # Cross-Attention 时间步门控生成器（只在同时有数值和类别列时才需要）
+        if self.num_numerical > 0 and len(self.num_classes) > 0:
+            self.cross_attn_gate = nn.Linear(dim_t, 1)
+            nn.init.constant_(self.cross_attn_gate.bias, -2.0) # 初始sigmoid约为0.12， 温和开启
+        else:
+            self.cross_attn_gate = None
+
         # ── 8. 聚合投影（dim_hidden*2 → dim_hidden，适配双路 CLS 拼接）─
         self.proj_fuse = nn.Sequential(
             nn.Linear(dim_hidden * 2, dim_hidden),
@@ -549,6 +563,12 @@ class TabMLPDenoise(nn.Module):
         y_raw_emb = self.label_emb(y.view(-1).long())
         emb       = t_emb + y_raw_emb                         # [B, dim_t]
 
+        # 计算时间步门控(如果启用)
+        if self.use_time_gate and self.cross_attn_gate is not None:
+            lambda_t = torch.sigmoid(self.cross_attn_gate(t_emb)).unsqueeze(-1)
+        else:
+            lambda_t = None
+
         # ── 拆分输入 ─────────────────────────────────────────────────────
         x_num      = x_in[:, :self.num_numerical]             # [B, N_num]
         x_cat_prob = x_in[:, self.num_numerical:].long()
@@ -615,9 +635,9 @@ class TabMLPDenoise(nn.Module):
             )
 
             num_seq_pre = num_seq   # ← 保存快照：cross_attn 之前的 num_seq
-            num_seq = self.cross_attn(num_seq, cat_seq)               # num ← cat（原始）
+            num_seq = self.cross_attn(num_seq, cat_seq, gate=lambda_t)               # num ← cat（原始）
             if not self.few_num_mode:
-                cat_seq = self.reverse_cross_attn(cat_seq, num_seq_pre)   # cat ← 原始 num！
+                cat_seq = self.reverse_cross_attn(cat_seq, num_seq_pre, gate=lambda_t)   # cat ← 原始 num！
 
         # ── 阶段2b：NumToCatFiLM（仅 few_num_mode）─────────────────────
         if self.num_to_cat_film is not None and num_seq.shape[1] > 0:
