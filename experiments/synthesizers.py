@@ -236,7 +236,7 @@ class MedSynth:
             df_features: pd.DataFrame,
             model_cat_cols: list,
     ) -> dict:
-        info = self.processor.get_model_info()
+        info = self.processor.get_data_info()
 
         # 计算各类别列的边际分布（用于采样校正）
         x_encoded = self.processor.transform(df_features)
@@ -245,8 +245,13 @@ class MedSynth:
 
         true_marginals = []
         for i, col in enumerate(model_cat_cols):
+            cat_col_data = cat_data[:, i]
+            print(f"列 {col} 的最小值: {cat_col_data.min()}, 最大值: {cat_col_data.max()}")
+            if (cat_col_data < 0).any():
+                print(f"警告：列 {col} 包含负值，数量: {(cat_col_data < 0).sum()}")
+
             n_classes = info['num_classes'][i]
-            counts = np.bincount(cat_data[:, i], minlength=n_classes)
+            counts = np.bincount(cat_data[:, i], minlength=int(n_classes))
             true_marginals.append(
                 torch.tensor(counts / counts.sum(), dtype=torch.float32)
             )

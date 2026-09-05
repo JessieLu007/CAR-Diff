@@ -23,7 +23,6 @@ def timestep_embedding(timesteps, dim, max_period=10000):
 # ─────────────────────────────────────────────
 # 编码模块
 # ─────────────────────────────────────────────
-
 class PeriodicEmbedding(nn.Module):
     """
     单列数值编码：sin/cos 展开 → 线性投影到 embed_dim。
@@ -39,6 +38,46 @@ class PeriodicEmbedding(nn.Module):
         x_f   = x.unsqueeze(-1) * self.freqs * 2 * math.pi   # [B, F]
         x_enc = torch.cat([torch.sin(x_f), torch.cos(x_f)], dim=-1)
         return self.proj(x_enc)
+
+
+class ColumnTypeEmbedding(nn.Module):
+    """
+    为数值列和类别列的 Token 注入可学习的「列类型标识」向量。
+    Type ID：0 = 数值列   1 = 类别列
+    """
+    def __init__(self, embed_dim: int):
+        super().__init__()
+        self.emb = nn.Embedding(2, embed_dim)          # 0=num, 1=cat
+        nn.init.normal_(self.emb.weight, std=0.02)     # 小初始化，不干扰早期训练
+
+    def get(self, type_id: int, device: torch.device) -> torch.Tensor:
+        """返回 [D] 类型向量，可直接广播加到 [B, D] 的 Token 上。"""
+        return self.emb(torch.tensor(type_id, dtype=torch.long, device=device))
+
+
+# ─────────────────────────────────────────────
+# 主干模块
+# ─────────────────────────────────────────────
+class MLPResidualBlock(nn.Module):
+    """AdaLN 风格的残差块（不变）"""
+    def __init__(self, dim: int, cond_dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.norm      = nn.LayerNorm(dim)
+        self.ff        = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim, dim),
+        )
+        self.cond_proj = nn.Linear(cond_dim, dim * 2)
+        nn.init.zeros_(self.cond_proj.weight)
+        nn.init.zeros_(self.cond_proj.bias)
+
+    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+        h            = self.norm(x)
+        scale, shift = self.cond_proj(emb).chunk(2, dim=-1)
+        h            = h * (1 + scale) + shift
+        return x + self.ff(h)
     
 
 class RFFEmbedding(nn.Module):
@@ -83,7 +122,7 @@ class MultiScaleNumEncoder(nn.Module):
 
         # 每个尺度独立一套 PeriodicEmbedding（共享 n_frequencies 结构，不共享参数）
         self.encoders = nn.ModuleList([
-            RFFEmbedding(embed_dim, n_frequencies)
+            PeriodicEmbedding(embed_dim, n_frequencies)
             for _ in range(n_expand)
         ])
 
@@ -109,30 +148,6 @@ class MultiScaleNumEncoder(nn.Module):
             for i, enc in enumerate(self.encoders)
         ]
         return torch.stack(tokens, dim=1)                          # [B, n_expand, D]
-
-
-# ─────────────────────────────────────────────
-# 主干模块（不变）
-# ─────────────────────────────────────────────
-
-class MLPResidualBlock(nn.Module):
-    """AdaLN 风格的残差块（不变）"""
-    def __init__(self, dim: int, cond_dim: int, dropout: float = 0.1):
-        super().__init__()
-        self.norm      = nn.LayerNorm(dim)
-        self.ff        = nn.Sequential(
-            nn.Linear(dim, dim),
-            nn.SiLU(),
-            nn.Dropout(dropout),
-            nn.Linear(dim, dim),
-        )
-        self.cond_proj = nn.Linear(cond_dim, dim * 2)
-
-    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
-        h            = self.norm(x)
-        scale, shift = self.cond_proj(emb).chunk(2, dim=-1)
-        h            = h * (1 + scale) + shift
-        return x + self.ff(h)
 
 
 class CrossAttentionBlock(nn.Module):

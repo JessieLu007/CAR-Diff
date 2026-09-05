@@ -1,276 +1,17 @@
 # core/denoise_model_v2.py  (v2 — 双路 Cross-Attention，显式跨模态路由)
-"""
-TabMLPDenoise v2：数值/类别双路 + 双向 Cross-Attention + FiLM
-=================================================================
-
-定位
-----
-与 v1（统一 Transformer，隐式路由）构成一组对照实验：
-
-    v2 假设：数值列和类别列的分布特性差异足够大，值得先各自过独立的
-             intra-modal Transformer，再通过显式的 cross-attention +
-             FiLM 交换信息 —— 比让 attention 从零学习跨模态路由更高效，
-             尤其在某个固定 N_num/N_cat 比例（如 Framingham）上。
-
-    代价：cross_attn / FiLM / 双 CLS 的路由方式是针对特定列数比例调的，
-          迁移到比例差异很大的数据集（Thyroid 几乎全数值、PIMA 目标列
-          混在类别里）时可能不稳定 —— 这正是 v1 存在的原因。
-
-架构
-----
-    x_in
-     │
-     ├─ num_col_encoders (PeriodicEmbedding，或 few_num_mode 下的
-     │   MultiScaleNumEncoder × N_num)         + col_type_emb(0)
-     └─ cat_embed_layers + cat_col_projs (× N_cat) + col_type_emb(1)
-     │
-     ▼
-    阶段0：FiLM（cat 均值 → num scale/shift，Intra-Attn 之前）
-     │
-     ▼
-    阶段1：模态内自注意力（num_transformer / cat_transformer，各自独立）
-     │
-     ▼
-    阶段2：并行双向 Cross-Attention
-        num_seq_updated = cross_attn(num_seq, cat_seq)          # num ← cat
-        cat_seq_updated = reverse_cross_attn(cat_seq, num_seq_pre)  # cat ← num（cross_attn 前快照，避免折射）
-     │
-     ▼
-    阶段3：双路 CLS 聚合 —— cls_num 聚合 num_seq，cls_cat 聚合 cat_seq，
-           拼接后经 proj_fuse 得到 h_shared
-     │
-     ├─ num_backbone (AdaLN MLPResidualBlock × M) → (可选 shared_dec) → out_num
-     └─ cat_backbone (AdaLN MLPResidualBlock × M) → (可选 shared_dec) → out_cat_heads
-
-few_num_mode（数值列 ≤ few_num_threshold 时自动激活，v1 无此机制）
---------------------------------------------------------------------
-    数值列太少时，num_transformer / cross_attn 的 KV 侧信号量不足。
-    MultiScaleNumEncoder 把每个数值列在多个可学习频率尺度下展开成
-    n_expand 个 token；NumToCatFiLM 额外提供一条 num→cat 的直接调制
-    通路（gate 初始为 0，训练初期不干扰）。
-
-share_decoder 参数（新增，与 v1 对齐）
----------------------------------------
-    True  （默认）：num/cat 各一个共享展开层 + 轻量列头，参数量与 v1
-                    对齐（约减少 12 倍），消除"v2 解码器容量更大"这个
-                    混杂变量，保证 v1/v2 消融只测路由机制本身。
-    False           每列独立 Sequential(Linear(D,D), SiLU, Linear(D,c))，
-                    即原始版本。
-
-外部接口（与 cat_loss.py / num_loss.py / 训练循环 完全兼容）
-------------------------------------------------------------
-    model.num_numerical_features  —— cat_loss.py 使用
-    model.slices_for_classes      —— cat_loss.py 使用
-    model.true_marginals          —— cat_loss.py 使用
-    model.model_cfg               —— 由训练循环外部赋值，不变
-    forward(x_in, timesteps, y)   —— 签名不变
-
-    注：原始存档版本遗漏了 num_numerical_features / slices_for_classes /
-    true_marginals 这三个属性的赋值，若接入 cat_loss.py 会直接报错，
-    本文件已补上（见 __init__ 开头）。
-"""
-
 from __future__ import annotations
 import math
 import torch
 import torch.nn as nn
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 工具函数
-# ─────────────────────────────────────────────────────────────────────────────
+from core.denoise_utils import (
+    timestep_embedding, PeriodicEmbedding, MLPResidualBlock, ColumnTypeEmbedding, MultiScaleNumEncoder, CrossAttentionBlock,
+    NumToCatFiLM
+)
 
-def timestep_embedding(timesteps, dim, max_period=10000):
-    half = dim // 2
-    freqs = torch.exp(
-        -math.log(max_period)
-        * torch.arange(start=0, end=half, dtype=torch.float32)
-        / half
-    ).to(device=timesteps.device)
-    args = timesteps[:, None].float() * freqs[None]
-    embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-    if dim % 2:
-        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-    return embedding
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 基础模块
-# ─────────────────────────────────────────────────────────────────────────────
-
-class PeriodicEmbedding(nn.Module):
-    """
-    单列数值编码：sin/cos 展开 → 线性投影到 embed_dim。
-    只处理「单列」，方便逐列 Token 化。
-    输出：[B] → [B, embed_dim]
-    """
-    def __init__(self, embed_dim: int, n_frequencies: int = 16):
-        super().__init__()
-        self.freqs = nn.Parameter(torch.randn(n_frequencies) * 0.02)
-        self.proj  = nn.Linear(n_frequencies * 2, embed_dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_f   = x.unsqueeze(-1) * self.freqs * 2 * math.pi   # [B, F]
-        x_enc = torch.cat([torch.sin(x_f), torch.cos(x_f)], dim=-1)
-        return self.proj(x_enc)
-
-
-class MultiScaleNumEncoder(nn.Module):
-    """
-    「少数值列」专用编码器：单列 → n_expand 个多尺度 Token。
-
-    动机：
-        当 num_numerical 较少（1~3）时，num_transformer 因序列长度不足而
-        被跳过，且 reverse_cross_attn 的 KV 侧信号量不足。
-        本模块将同一列在 n_expand 个不同频率尺度下独立编码，构造长度为
-        n_expand 的 Token 序列，从而：
-          1. 使 num_transformer 可运行（_eff_num_tokens > 1）
-          2. 为 cross_attn 提供更丰富的 Key/Value 序列
-          3. 不同尺度编码覆盖粗粒度（低频）→ 细粒度（高频）的数值结构
-
-    输出：[B] → [B, n_expand, D]
-    """
-    def __init__(self, embed_dim: int, n_expand: int, n_frequencies: int = 16):
-        super().__init__()
-        assert n_expand >= 1
-
-        self.encoders = nn.ModuleList([
-            PeriodicEmbedding(embed_dim, n_frequencies)
-            for _ in range(n_expand)
-        ])
-
-        init_log = torch.linspace(-1.0, 1.0, n_expand)  # n_expand=1 → [0.0] → scale=1.0
-        self.log_freq_scales = nn.Parameter(init_log)
-
-        self.token_importance = nn.Parameter(torch.zeros(n_expand))
-
-    def forward(self, x_col: torch.Tensor) -> torch.Tensor:
-        """
-        x_col: [B] — 单列数值（已标准化）
-        返回:  [B, n_expand, D]
-        """
-        freq_scales = torch.exp(self.log_freq_scales)              # [n_expand]，正值
-        importance  = torch.softmax(self.token_importance, dim=0) * len(self.encoders)
-
-        tokens = [
-            importance[i] * enc(x_col * freq_scales[i])
-            for i, enc in enumerate(self.encoders)
-        ]
-        return torch.stack(tokens, dim=1)                          # [B, n_expand, D]
-
-
-class MLPResidualBlock(nn.Module):
-    """AdaLN 风格的残差块（dim → dim → dim，比 v1 简洁，无 zero-init）"""
-    def __init__(self, dim: int, cond_dim: int, dropout: float = 0.1):
-        super().__init__()
-        self.norm      = nn.LayerNorm(dim)
-        self.ff        = nn.Sequential(
-            nn.Linear(dim, dim),
-            nn.SiLU(),
-            nn.Dropout(dropout),
-            nn.Linear(dim, dim),
-        )
-        self.cond_proj = nn.Linear(cond_dim, dim * 2)
-
-    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
-        h            = self.norm(x)
-        scale, shift = self.cond_proj(emb).chunk(2, dim=-1)
-        h            = h * (1 + scale) + shift
-        return x + self.ff(h)
-
-
-class CrossAttentionBlock(nn.Module):
-    """
-    Q 侧 Token 询问 KV 侧 Token 集合。
-    用途一：数值 Token 询问类别背景（num ← cat）
-    用途二：类别 Token 询问数值背景（cat ← num）
-    """
-    def __init__(self, dim: int, num_heads: int = 4, dropout: float = 0.1):
-        super().__init__()
-        self.attn = nn.MultiheadAttention(
-            embed_dim=dim, num_heads=num_heads,
-            dropout=dropout, batch_first=True
-        )
-        self.norm_q   = nn.LayerNorm(dim)
-        self.norm_kv  = nn.LayerNorm(dim)
-        self.norm_out = nn.LayerNorm(dim)
-
-    def forward(
-        self,
-        q_tokens:  torch.Tensor,   # [B, Lq, D]
-        kv_tokens: torch.Tensor,   # [B, Lk, D]
-        gate: torch.Tensor = None
-    ) -> torch.Tensor:
-        q      = self.norm_q(q_tokens)
-        kv     = self.norm_kv(kv_tokens)
-        out, _ = self.attn(q, kv, kv)
-
-        if gate is not None:
-            out = out * gate
-
-        return self.norm_out(q_tokens + out)
-
-
-class NumToCatFiLM(nn.Module):
-    """
-    「少数值列」专用：数值 Token 均值 → 类别序列轻量 FiLM 调制。
-
-    动机：
-        在 few_num_mode 下，即使通过 MultiScaleNumEncoder 扩展了数值 Token 数量，
-        reverse_cross_attn（cat ← num）收到的 KV 信号仍以数值侧为主；
-        本模块提供一条更直接的 num→cat 调制路径，以残差方式叠加在
-        reverse_cross_attn 之后，作为互补信号。
-
-        gate_scale 初始化为 0（tanh(0)=0），训练初期调制幅度严格为零，
-        不干扰正常训练启动；后期逐步学习合适的调制强度。
-    """
-    def __init__(self, dim_hidden: int):
-        super().__init__()
-        self.num_to_cat = nn.Linear(dim_hidden, dim_hidden * 2)
-        nn.init.zeros_(self.num_to_cat.weight)
-        nn.init.zeros_(self.num_to_cat.bias)
-
-        self.gate_layer = nn.Linear(dim_hidden, dim_hidden)
-        nn.init.constant_(self.gate_layer.bias, -1.0)   # sigmoid(-1) ≈ 0.27，初始门控偏小
-
-        self.gate_scale = nn.Parameter(torch.zeros(1))  # tanh(0)=0，初始完全关闭
-
-    def forward(self, cat_seq: torch.Tensor, num_seq: torch.Tensor) -> torch.Tensor:
-        h_num       = num_seq.mean(dim=1)                              # [B, D]
-        gamma, beta = self.num_to_cat(h_num).chunk(2, dim=-1)         # [B, D] × 2
-        gate        = torch.sigmoid(self.gate_layer(h_num))            # [B, D]
-        sc          = torch.tanh(self.gate_scale)                      # scalar
-
-        modulation = sc * gate.unsqueeze(1) * (
-            cat_seq * gamma.unsqueeze(1) + beta.unsqueeze(1)
-        )
-        return cat_seq + modulation                                    # [B, N_cat, D]
-
-
-class ColumnTypeEmbedding(nn.Module):
-    """
-    为数值列和类别列的 Token 注入可学习的「列类型标识」向量。
-    Type ID：0 = 数值列   1 = 类别列
-    """
-    def __init__(self, embed_dim: int):
-        super().__init__()
-        self.emb = nn.Embedding(2, embed_dim)          # 0=num, 1=cat
-        nn.init.normal_(self.emb.weight, std=0.02)     # 小初始化，不干扰早期训练
-
-    def get(self, type_id: int, device: torch.device) -> torch.Tensor:
-        """返回 [D] 类型向量，可直接广播加到 [B, D] 的 Token 上。"""
-        return self.emb(torch.tensor(type_id, dtype=torch.long, device=device))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 主模型
-# ─────────────────────────────────────────────────────────────────────────────
 
 class TabMLPDenoise(nn.Module):
-    """
-    混合型表格去噪扩散模型（v2：双路 + 显式 Cross-Attention）。
-    """
-
     def __init__(
         self,
         task,
@@ -300,7 +41,7 @@ class TabMLPDenoise(nn.Module):
         self.share_decoder = share_decoder
         self.use_time_gate = use_time_gate
 
-        # ── cat_loss.py 兼容接口（原始存档版本遗漏，此处补上）───────────
+        # ── cat_loss.py 兼容接口───────────
         self.num_numerical_features = self.num_numerical
         _start = 0
         self.slices_for_classes = []
@@ -309,7 +50,7 @@ class TabMLPDenoise(nn.Module):
             _start += n_c
         self.true_marginals = true_marginals
 
-        # ── 少数值列模式判断 ─────────────────────────────────────────────
+        # ── 少数值列模式判断 ─────────────────
         self.few_num_mode = (
             0 < self.num_numerical <= few_num_threshold
             and n_expand > 1
@@ -378,9 +119,8 @@ class TabMLPDenoise(nn.Module):
         self.col_type_emb = ColumnTypeEmbedding(dim_hidden)
 
         # ── 4. Cross-Attention（并行双向）───────────────────────────────
-        # cross_attn 前保存 num_seq 快照，reverse_cross_attn 用该快照作为
-        # KV，确保 cat ← num 方向读到的是真实数值信号，而非 num 已经融合
-        # 过 cat 之后的折射结果。
+        # cross_attn 前保存 num_seq 快照，reverse_cross_attn 用该快照作为 KV,
+        # 确保 cat ← num 方向读到的是真实数值信号，而非 num 已经融合过 cat 之后的折射结果。
         if self.num_numerical > 0 and len(self.num_classes) > 0:
             self.cross_attn         = CrossAttentionBlock(dim_hidden, nhead_cross, dropout)
             if not self.few_num_mode:

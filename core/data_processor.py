@@ -367,7 +367,7 @@ class TabularDataProcessor:
         return df_out
 
     # =========================================================
-    def get_model_info(self):
+    def get_data_info(self):
         return {
             'num_numerical': len(self.num_cols),
             'num_classes':   [self.meta[col]['classes'] for col in self.cat_cols],
