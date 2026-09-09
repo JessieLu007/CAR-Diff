@@ -16,7 +16,7 @@ from .num_loss import compute_numerical_loss
 from .cat_loss import compute_categorical_loss, MarginalEMATracker
 from .diff_schedules import DiffusionScheduleMixin
 from .diff_sampling import sample_core
-from .diff_training import train_loop
+from .diff_training import train_loop, smooth_labels
 
 
 # ---------------------------------------------------------------------------
@@ -182,9 +182,6 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
 
         return raw
 
-    # =========================================================
-    # 核心数学模块
-    # =========================================================
 
     def compute_loss(self, batch_x, batch_y, marginal_tracker=None):
         b = batch_x.shape[0]
@@ -197,6 +194,15 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         if self.train_cfg.task == "minority_cond":
             drop_mask = torch.rand((b,), device=self.device) < self.train_cfg.uncond_p
             y_cond[drop_mask] = self.model_cfg.null_class_idx
+
+            if getattr(self.train_cfg, "use_label_smoothing", False):
+                keep_mask = ~drop_mask
+                if keep_mask.any():
+                    y_cond[keep_mask] = smooth_labels(
+                        y_cond[keep_mask],
+                        num_classes=self.model_cfg.null_class_idx,
+                        smooth_prob=self.train_cfg.label_smooth_prob,
+                    )
 
         x_num = batch_x[:, :self.num_numerical_features].float()
 

@@ -29,6 +29,7 @@ class ModelConfig:
     # 控制模型prediction模式
     # 默认eps,可切换为x0,此时直接预测x0而非噪声epsilon，当前模式下eps效果最好，暂时不考虑x0
     prediction_type: str = 'eps' 
+    version: str = "v2" # 新增模型版本 "v1" 或者 "v2"
 
     # 损失组件
     focal_mode: str = "adaptive"  # "off" | "fixed" | "adaptive"
@@ -59,6 +60,9 @@ class TrainingConfig:
     lr: float = 1e-4
     uncond_p: float = 0.1   # CFG 空条件丢弃率（仅 *_cond 范式生效）
     patience: int = 20
+
+    use_label_smoothing: bool = False # 是否对minority_cond的真实标签做随机平滑
+    label_smooth_prob: float = 0.05   # 平滑概率，含义同diff_training.smooth_labels
 
     # ------------------------------------------------------------------
     # task：训练范式，调用方始终传入全量数据，内部自动路由
