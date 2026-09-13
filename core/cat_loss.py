@@ -27,16 +27,29 @@ class MarginalEMATracker(nn.Module):
 
 # ── 损失组件 ─────────────────────────────────────────────────────────────────
 
-def _la_ce(logits, targets, prior, tau_base):
+def _get_marginal_imbalances(model) -> list:
+    """imbalance 只由固定的 true_marginals 决定，训练全程不变，只需算一次。
+    缓存后不再需要每个 step、每一列都触发 .item() 同步——这也是 torch.compile
+    反复重新编译、图断裂的直接原因之一。"""
+    cached = getattr(model, "_marginal_imbalance_cache", None)
+    if cached is None:
+        cached = [
+            max(0.0, 1.0 - 2.0 * prior.min().item())
+            for prior in model.true_marginals
+        ]
+        model._marginal_imbalance_cache = cached
+    return cached
+
+
+def _la_ce(logits, targets, prior, tau_base, imbalance):
     """Logit Adjustment CE：按不平衡程度自适应 tau。"""
-    imbalance = max(0.0, 1.0 - 2.0 * prior.min().item())
     tau = tau_base * imbalance
     adj = tau * torch.log(prior.to(logits.device) + 1e-8)
     return F.cross_entropy(logits + adj, targets)
 
 
-def _focal(logits, targets, prior, gamma_base, focal_mode, alpha_scale=1.0,
-           alpha_imbalance_threshold=0.2):
+def _focal(logits, targets, prior, gamma_base, focal_mode, imbalance,
+           alpha_scale=1.0, alpha_imbalance_threshold=0.2):
     """
     Focal Loss with optional adaptive gamma and class-balanced alpha.
 
@@ -51,8 +64,6 @@ def _focal(logits, targets, prior, gamma_base, focal_mode, alpha_scale=1.0,
     if focal_mode == "adaptive":
         # 少数类 gamma 更小：prior 越小，gamma 越小，少数类梯度不被过度压制
         # gamma ∈ [gamma_base * 0.3, gamma_base]
-        imbalance = max(0.0, 1.0 - 2.0 * prior.min().item())
-
         gamma_per_class = gamma_base * (0.3 + 0.7 * prior.pow(0.5))
         gamma = gamma_per_class[targets]
 
@@ -159,25 +170,28 @@ def compute_categorical_loss(
     loss_local  = torch.tensor(0.0, device=model_out.device)
     loss_global = torch.tensor(0.0, device=model_out.device)
 
+    imbalances = _get_marginal_imbalances(model)
+
     for i, ix in enumerate(slices):
         logits = logits_all[:, ix]
         prior  = true_marginals[i]
+        imbalance = imbalances[i]
 
         # 微观：per-sample 主损失
         if focal_mode == "off":
-            loss_local += _la_ce(logits, x_cat[:, i], prior, tau_base)
+            loss_local += _la_ce(logits, x_cat[:, i], prior, tau_base, imbalance)
         else:
             loss_local += _focal(
                 logits, x_cat[:, i], prior,
                 gamma_base=gamma_base,
                 focal_mode=focal_mode,
+                imbalance=imbalance,
                 alpha_scale=alpha_scale,
             )
 
         # 宏观：边缘分布对齐
         if use_marginal_align:
             ema_m = marginal_tracker[i] if marginal_tracker is not None else None
-            imbalance = max(0.0, 1.0 - 2.0 * prior.min().item())
 
             if imbalance < 0.1:
                 # 均衡列：只施加很弱的软约束，避免干扰

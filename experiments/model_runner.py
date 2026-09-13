@@ -16,27 +16,39 @@ from core.diffusion import MedAGDiffusion
 from configs.experiment_configs import ExperimentConfig
 
 
-def build_dataloader(processor, df_features: pd.DataFrame, y: torch.Tensor, batch_size: int, shuffle: bool) -> DataLoader:
-    x_encoded = processor.transform(df_features)
-    ordered_cols = processor.num_cols + processor.cat_cols # 模型需要的先数值后分类的顺序
-    x_tensor = torch.tensor(x_encoded[ordered_cols].values, dtype=torch.float32)
-    dataset = TensorDataset(x_tensor, y)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+class InMemoryTensorLoader:
+    """替代 DataLoader：数据整份常驻显存，直接张量索引取 batch。
+    drop_last=True 固定：配合 torch.compile(mode="reduce-overhead") 的
+    CUDA Graph 模式，每个 batch 形状必须一致，因此丢弃不满 batch_size 的尾巴。
+    """
+    def __init__(self, x: torch.Tensor, y: torch.Tensor, batch_size: int, device, shuffle: bool = True):
+        if batch_size > x.shape[0]:
+            print(f"⚠️  batch_size({batch_size}) > 样本数({x.shape[0]})，drop_last 会导致每个 epoch 没有可用 batch")
+        self.x = x.to(device)
+        self.y = y.to(device)
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.dataset = self.x
 
-'''def build_dataloader(processor, df_features: pd.DataFrame, y: torch.Tensor,
-                     batch_size: int, shuffle: bool,
-                     pin_memory: bool = True) -> DataLoader:
+    def __iter__(self):
+        n = self.x.shape[0]
+        order = torch.randperm(n, device=self.x.device) if self.shuffle else torch.arange(n, device=self.x.device)
+        usable_n = (n // self.batch_size) * self.batch_size
+        for start in range(0, usable_n, self.batch_size):
+            idx = order[start:start + self.batch_size]
+            yield self.x[idx], self.y[idx]
+
+    def __len__(self):
+        return self.x.shape[0] // self.batch_size
+
+
+def build_dataloader(processor, df_features: pd.DataFrame, y: torch.Tensor,
+                     batch_size: int, shuffle: bool, device) -> InMemoryTensorLoader:
     x_encoded = processor.transform(df_features)
     ordered_cols = processor.num_cols + processor.cat_cols
     x_tensor = torch.tensor(x_encoded[ordered_cols].values, dtype=torch.float32)
-    dataset = TensorDataset(x_tensor, y)
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=0,          # 内存数据集，保持 0
-        pin_memory=pin_memory,
-    )'''
+    return InMemoryTensorLoader(x_tensor, y, batch_size=batch_size, device=device, shuffle=shuffle)
+
 
 def build_meta_info(processor, df_features: pd.DataFrame) -> dict:
     """按列名取值，不依赖 processor.transform() 输出的列顺序。"""
