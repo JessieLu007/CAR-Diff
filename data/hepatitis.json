@@ -7,6 +7,6 @@
     "cat_col_idx": [1,2,3,4,5,6,7,8,9,10,11,12,18], 
     "target_col_idx": [19], 
     "file_type": "csv",
-    "data_path": "data/hepatitis/hepatitis.csv",
+    "data_path": "data/hepatitis.csv",
     "test_path": null
 }

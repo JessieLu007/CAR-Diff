@@ -23,6 +23,20 @@ def build_dataloader(processor, df_features: pd.DataFrame, y: torch.Tensor, batc
     dataset = TensorDataset(x_tensor, y)
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
 
+'''def build_dataloader(processor, df_features: pd.DataFrame, y: torch.Tensor,
+                     batch_size: int, shuffle: bool,
+                     pin_memory: bool = True) -> DataLoader:
+    x_encoded = processor.transform(df_features)
+    ordered_cols = processor.num_cols + processor.cat_cols
+    x_tensor = torch.tensor(x_encoded[ordered_cols].values, dtype=torch.float32)
+    dataset = TensorDataset(x_tensor, y)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=0,          # 内存数据集，保持 0
+        pin_memory=pin_memory,
+    )'''
 
 def build_meta_info(processor, df_features: pd.DataFrame) -> dict:
     """按列名取值，不依赖 processor.transform() 输出的列顺序。"""

@@ -13,10 +13,10 @@ evaluation 包统一入口
     utils.py           — 辅助函数（infer_ml_mode_from_task 等）
     tool_compare.py    — 跨实验对比工具
 """
-from evaluation.core_evaluator import TabularEvaluator
-from evaluation.tool_stability import StabilityEvaluator
+#from evaluation.core_evaluator import TabularEvaluator
+#from evaluation.tool_stability import StabilityEvaluator
 from evaluation.utils import infer_ml_mode_from_task
-from evaluation.tool_compare import compare_experiments, save_comparison
+#from evaluation.tool_compare import compare_experiments, save_comparison
 
 
 def run_full_evaluation_from_config(
@@ -39,7 +39,7 @@ def run_full_evaluation_from_config(
     :param kwargs:        透传至 CrossValidationEvaluator
     :return:              (stats_agg, ml_agg, cat_compare_report)
     """
-    ml_mode = infer_ml_mode_from_task(exp_cfg.training.task)
+    '''ml_mode = infer_ml_mode_from_task(exp_cfg.training.task)
     print(f"[评估模式] task={exp_cfg.training.task} → ml_mode={ml_mode}")
 
     evaluator = CrossValidationEvaluator(
@@ -55,11 +55,11 @@ def run_full_evaluation_from_config(
 
 
 __all__ = [
-    'TabularEvaluator',
+    #'TabularEvaluator',
     'CrossValidationEvaluator',
     'StabilityEvaluator',
     'infer_ml_mode_from_task',
     'compare_experiments',
     'save_comparison',
     'run_full_evaluation_from_config',
-]
+]'''

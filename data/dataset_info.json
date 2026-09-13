@@ -2,7 +2,7 @@
     "framingham": {
         "categorical": ["male", "education", "currentSmoker", "BPMeds", "prevalentStroke", "prevalentHyp", "diabetes"],
         "numerical":["age", "cigsPerDay", "totChol", "sysBP", "diaBP", "BMI", "heartRate", "glucose"],
-        "target":"label"
+        "target":"TenYearCHD"
     },
 
     "hepatitis": {
@@ -10,6 +10,6 @@
         "anorexia", "liver_big", "liver_firm", "spleen_palpable", "spiders", "ascites",
         "varices", "histology"],
         "numerical":["age", "bilirubin", "alk_phosphate", "sgot", "albumin", "protime"], 
-        "target":"label"
+        "target":"class"
     }
 }

@@ -1,4 +1,5 @@
 # core/diff_training.py
+import csv
 import math
 import torch
 import matplotlib.pyplot as plt
@@ -7,189 +8,62 @@ from datetime import datetime
 from torch.optim.lr_scheduler import LambdaLR
 
 from .cat_loss import MarginalEMATracker
+from .loss_history import LossHistory
 
 
-# ----------------------------------------------------------------
-# Loss 历史记录器
-# ----------------------------------------------------------------
-class LossHistory:
-    """轻量loss记录容器，新增对验证损失的记录和最佳模型追踪"""
-
-    def __init__(self):
-        self.train_total: list[float] = []
-        self.train_num: list[float] = []
-        self.train_cat: list[float] = []
-        self.val_total: list[float] = [] # 新增验证总损失
-        self.best_monitor_loss: float = float('inf') # 追踪用于早停的最佳损失（通常是验证损失）
-        self.best_epoch: int = 0
-
-    def append(self, train_total: float, train_num: float, train_cat: float,
-               val_total: float | None, epoch: int): # 新增 val_total 参数
-        self.train_total.append(train_total)
-        self.train_num.append(train_num)
-        self.train_cat.append(train_cat)
-        if val_total is not None:
-            self.val_total.append(val_total)
-
-    def set_best(self, epoch: int, monitor_loss: float) -> None:
-        self.best_epoch         = epoch
-        self.best_monitor_loss  = monitor_loss
-
-    def plot(self, save_path: str | None = None, show: bool = False) -> None:
-        """
-        绘制loss曲线并保存，默认不弹窗
-        """
-        if not self.train_total:
-            print("没有可绘制的loss数据")
-            return
-        
-        epochs = list(range(1, len(self.train_total) + 1))
-        fig, axes = plt.subplots(1, 2, figsize=(12,4))
-        fig.suptitle("Training and Validation Loss Curves", fontsize=13, fontweight='bold')
-
-        # 左图： 总 loss
-        ax = axes[0]
-        ax.plot(epochs, self.train_total, color='#2c7bb6', linewidth=1.5, label='Train Total')
-        if self.val_total:
-            val_epochs = list(range(1, len(self.val_total) + 1))
-            ax.plot(val_epochs, self.val_total, color='#ff7f0e', linewidth=1.5, linestyle='--', label='Val Total')
-        ax.axvline(self.best_epoch + 1, color='#d7191c', linestyle='--',linewidth=1, label=f'Best Epoch ({self.best_epoch + 1})')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('Loss')
-        ax.set_title('Total Loss')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-        # 右图： num / cat 分量
-        ax = axes[1]
-        ax.plot(epochs, self.train_num, color='#1a9641', linewidth=1.2, label='Numerical Loss')
-        ax.plot(epochs, self.train_cat, color='#fdae61', linewidth=1.2, label='Categorical Loss')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('Loss')
-        ax.set_title('Numerical vs Categorical Loss')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-        plt.tight_layout
-
-        if save_path is None:
-            ts          = datetime.now().strftime("%m%d_%H%M%S")
-            save_path   = f"loss_curve_{ts}.png"
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Loss曲线已保存至：{save_path}")
-
-        if show:
-            plt.show()
-        plt.close(fig)
- 
-    def summary(self) -> str:
-        if not self.train_total:
-            return "（无训练记录）"
-        return (
-            f"总 Epoch: {len(self.train_total)} | "
-            f"最优监控: {self.best_monitor_loss:.4f} (Epoch {self.best_epoch + 1}) | "
-            f"末尾训练Loss: {self.train_total[-1]:.4f}"
-        )
-
-# ----------------------------------------------------------------
-# 学习率调度 
-# ----------------------------------------------------------------
-def get_warmup_cosine_scheduler(
-    optimizer,
-    warmup_epochs: int,
-    total_epochs:  int,
-    min_lr_ratio:  float = 0.05,   # 最低 lr = base_lr * 0.05
-) -> LambdaLR:
-    """
-    线性warmup + Cosine Decay调度器
-    0 → warmup_epochs : 线性 warmup，lr 从 0 升到 base_lr
-    warmup_epochs → total_epochs : cosine decay，lr 降到 base_lr * min_lr_ratio
-    """
-    def lr_lambda(epoch) -> float:
-        if epoch < warmup_epochs:
-            return float(epoch + 1) / float(warmup_epochs)
-        progress = (epoch - warmup_epochs) / float(
-            max(1, total_epochs - warmup_epochs)
+def get_warmup_cosine_scheduler(optimizer, warmup_steps: int,
+    total_steps:  int, min_lr_ratio: float = 0.05,) -> LambdaLR:
+    def lr_lambda(step) -> float:
+        if step < warmup_steps:
+            return float(step + 1) / float(warmup_steps)
+        progress = (step - warmup_steps) / float(
+            max(1, total_steps - warmup_steps)
         )
         cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
         return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
-
     return LambdaLR(optimizer, lr_lambda)
 
-# ----------------------------------------------------------------
-# 标签平滑（可选，用于minority_cond模式）
-# 以小概率将 y 替换为随机类别，减少模型对 label 条件的过度依赖
-# ----------------------------------------------------------------
 
-def smooth_labels(
-        y           : torch.Tensor, 
-        num_classes : int,
-        smooth_prob : float = 0.05
-        ) -> torch.Tensor:
-    """
-    以smooth_prob的概率将标签替换为随机类别，
-    用于减少模型对 label 条件的过度依赖，缓解采样侧的类别偏移。
-    """
+def smooth_labels(y: torch.Tensor, num_classes : int, smooth_prob : float = 0.05) -> torch.Tensor:
     mask     = torch.rand_like(y.float()) < smooth_prob
     random_y = torch.randint_like(y, low=0, high=num_classes)
     return torch.where(mask, random_y, y)
 
-# ----------------------------------------------------------------
-# 训练主循环
-# ----------------------------------------------------------------
+
 def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
-    """
-    扩散模型训练主循环。
-
-    特性：
-        - Warmup + Cosine Decay 学习率
-        - 基于验证集的EMA监控与早停
-        - minority 模式下的checkpoint ensemble (取最优K个权重平均)
-        - 可选两阶段训练：Phase 1 冻结数值编码器， Phase 2 联合微调
-        - MarginalEMATracker 接入 cat_loss 边缘对齐
-        - NaN / Inf 梯度检测与跳批保护
-
-    训练结束后：
-        model.loss_history(LossHistory)挂载到model, 可调用.plot()绘图
-    """
 
     task_name = train_cfg.task
     is_minority = task_name in ('minority_uncond', 'minority_cond')
 
-    # ------- 两阶段训练开关 ---------------------
-    # use_two_phase=True 且 is_minority=True 时启用分阶段冻结
-    # Phase 1：冻结数值编码器，优先稳定类别表示
-    # Phase 2：解冻全部参数，联合微调
+    # 两阶段训练开关
     use_two_phase = getattr(train_cfg, 'use_two_phase', False)
-    PHASE1_EPOCHS = getattr(train_cfg, 'phase1_epochs', 50)
-    in_phase1     = use_two_phase #and is_minority
+    PHASE1_STEPS  = getattr(train_cfg, 'phase1_steps', 5000) 
+    in_phase1     = use_two_phase
 
-    # ------ Checkpoint Ensemble 设置 -------------
-    # minority 模式下保存val loss最优的K个checkpoint， 训练结束后做权重平均
+    # Checkpoint Ensemble 设置
     ENSEMBLE_K = getattr(train_cfg, 'ensemble_k', 5) if is_minority else 1
-    top_k_states = [] # list of (monitor_loss, state_dict)
- 
-    # ------ Optimizer --------------------------
-    optimizer = torch.optim.AdamW(
-        list(model._denoise_fn.parameters()) + [model.log_vars], 
-        lr=train_cfg.lr, 
-        weight_decay=1e-4 if is_minority else 1e-5) # minority下加强 weight decay
+    top_k_states = []  # list of (monitor_loss, state_dict)
 
-    # ------ Scheduler --------------------------
-    warmup_epochs = 10 if is_minority else 20
-    scheduler = get_warmup_cosine_scheduler(
-        optimizer,
-        warmup_epochs = warmup_epochs,
-        total_epochs = train_cfg.epochs,
-        min_lr_ratio = 0.05,  # 最终 lr ≈ 0.0005 * 0.05 = 2.5e-5
-    )
-    
-    # ------ 验证集监控策略 ---------------------------------
+    # Optimizer
+    optimizer = torch.optim.AdamW(
+        list(model._denoise_fn.parameters()) + [model.log_vars],
+        lr=train_cfg.lr, weight_decay=1e-4 if is_minority else 1e-5)
+
+    # Scheduler
+    default_warmup_steps = 500 if is_minority else 1000
+    warmup_steps = getattr(train_cfg, 'warmup_steps', default_warmup_steps)
+    total_steps  = train_cfg.total_steps
+    scheduler = get_warmup_cosine_scheduler(optimizer, warmup_steps = warmup_steps,
+        total_steps  = total_steps, min_lr_ratio = 0.05,)
+
+    eval_every = train_cfg.eval_every
+    log_every  = getattr(train_cfg, 'log_every', eval_every)
+
+    # 验证集监控策略
     val_size = sum(len(b[0]) for b in val_dataloader) if val_dataloader else 0
 
-    if val_dataloader is not None and val_size >0:
-        USE_VAL_MONITOR = True # 只要有验证集就用
+    if val_dataloader is not None and val_size > 0:
+        USE_VAL_MONITOR = True
         if val_size < 200:
             EMA_ALPHA = 0.25  # 更平滑，抑制小验证集的噪声
             print(f"⚠️  验证集仅 {val_size} 条，强制使用 val 监控，EMA 平滑加强至 {EMA_ALPHA}")
@@ -199,120 +73,127 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
         USE_VAL_MONITOR = False
         EMA_ALPHA = 0.1
 
-    # ----- MarginalEMATracker ----------------------------
-    marginal_tracker = MarginalEMATracker(
-        true_marginals=model.true_marginals,
-        momentum=0.99,
-    ).to(model.device)
-    
-    # —————训练状态初始化—————————————————————————————————————————————
+    # MarginalEMATracker
+    marginal_tracker = MarginalEMATracker(true_marginals=model.true_marginals, momentum=0.99,).to(model.device)
+
+    # 训练状态初始化
     history             = LossHistory()
     model.loss_history  = history
-
     best_monitor_loss   = float('inf')
-    best_state          = None # 用于保存最佳模型权重
+    best_state          = None
     patience_counter    = 0
     ema_monitor_loss    = None
     stop_training       = False
 
     MIN_RELATIVE_IMPROVEMENT = 0.001
 
-    print(f"\n⏳ 开始训练 (Epochs: {train_cfg.epochs})..."
-          f"Early-stop patience: {train_cfg.patience}...")
-    
-    # ————————Phase 1 初始化（可选）————————————————————————————————————
+    print(f"\n⏳ 开始训练 (Total steps: {total_steps}, 每 {eval_every} step 验证/记录一次)..."
+          f"Early-stop patience: {train_cfg.patience} 个验证间隔...")
+
+    # Phase 1 初始化（可选）
     if in_phase1:
         for name, p in model._denoise_fn.named_parameters():
             if 'cat_col_encoders' in name or 'cat_transformer' in name:
                 p.requires_grad_(False)
-        print(f" Phase 1 (前{PHASE1_EPOCHS} epochs): 冻结分类编码器，优先稳定数值表示")
+        print(f" Phase 1 (前{PHASE1_STEPS} steps): 冻结分类编码器，优先稳定数值表示")
 
-    # =======================================================================
-    # 训练主循环
-    # =======================================================================
-    for epoch in range(train_cfg.epochs):
+    # 训练主循环：按 step 迭代，dataloader 耗尽自动重新开始
+    model._denoise_fn.train()
+    if marginal_tracker is not None:
+        marginal_tracker.train()
+
+    train_iter = iter(train_dataloader)
+
+    running_loss     = torch.zeros((), device=model.device)
+    running_loss_num = torch.zeros((), device=model.device)
+    running_loss_cat = torch.zeros((), device=model.device)
+    running_batches  = 0
+
+    for step in range(1, total_steps + 1):
         if stop_training:
             break
 
-        # ———————— Phase 切换（可选）——————————————————————————————————————
-        if in_phase1 and epoch == PHASE1_EPOCHS:
+        # Phase 切换（可选）
+        if in_phase1 and step == PHASE1_STEPS:
             for p in model._denoise_fn.parameters():
                 p.requires_grad_(True)
             for pg in optimizer.param_groups:
-                pg['lr'] *= 0.75 # 解冻后降低lr,防止震荡
+                pg['lr'] *= 0.75  # 解冻后降低lr,防止震荡
             in_phase1 = False
-            print(f" Phase 2 (Epoch {epoch+1}): 解冻所有参数，联合微调， lr x 0.5")
+            print(f" Phase 2 (Step {step}): 解冻所有参数，联合微调， lr x 0.75")
 
-        # ————————训练阶段 （Training Phase）——————————————————————————————
-        model._denoise_fn.train() 
-        if marginal_tracker is not None:
-            marginal_tracker.train()
+        # 取一个 batch，数据耗尽则重新开始迭代
+        try:
+            batch_x, batch_y = next(train_iter)
+        except StopIteration:
+            train_iter = iter(train_dataloader)
+            batch_x, batch_y = next(train_iter)
 
-        epoch_train_loss = 0.0
-        epoch_train_loss_num = 0.0
-        epoch_train_loss_cat = 0.0
-        train_valid_batches = 0
-        
-        for batch_x, batch_y in train_dataloader:
-            batch_x, batch_y = batch_x.to(model.device), batch_y.to(model.device)
+        batch_x, batch_y = batch_x.to(model.device), batch_y.to(model.device)
+        optimizer.zero_grad()
+
+        loss, loss_num, loss_cat, _ = model.compute_loss(
+            batch_x, batch_y, marginal_tracker=marginal_tracker)
+
+        # ----- NaN/Inf 检测 -----
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"跳过 NaN 或 Inf 批次 (Step {step})")
+            stop_training = True
+            break
+
+        loss.backward()
+        has_invalid_grad = any(
+            param.grad is not None and not torch.isfinite(param.grad).all()
+            for param in model._denoise_fn.parameters())
+
+        if has_invalid_grad:
             optimizer.zero_grad()
-            
-            loss, loss_num, loss_cat, _ = model.compute_loss(
-                batch_x, batch_y, marginal_tracker=marginal_tracker)
-            
-            # ----- NaN/Inf 检测 -----
-            if torch.isnan(loss) or torch.isinf(loss):
-                print(f"跳过 NaN 或 Inf 批次 (Epoch {epoch})")
-                stop_training = True
-                break
-            
-            loss.backward()
-            # 检查反向传播梯度中是否含有NaN或Inf
-            has_invalid_grad = any(
-                param.grad is not None and not torch.isfinite(param.grad).all()
-                for param in model._denoise_fn.parameters()
-            )
-
-            if has_invalid_grad:
-                optimizer.zero_grad()
-                print(f"Warning: 无效梯度，跳过本批次（Epoch {epoch + 1}")
-                continue
-
-            torch.nn.utils.clip_grad_norm_(model._denoise_fn.parameters(), 1.0)
-            optimizer.step()
-            
-            epoch_train_loss        += loss.item()
-            epoch_train_loss_num    += loss_num.item()
-            epoch_train_loss_cat    += loss_cat.item()
-            train_valid_batches     += 1
-            
-        if train_valid_batches == 0:
-            if not stop_training:
-                print(f"Warning: Epoch {epoch} 无有效训练批次。跳过。")
+            print(f"Warning: 无效梯度，跳过本批次（Step {step}）")
             continue
 
-        avg_train_loss = epoch_train_loss    / train_valid_batches
-        avg_train_num = epoch_train_loss_num / train_valid_batches
-        avg_train_cat = epoch_train_loss_cat / train_valid_batches
+        torch.nn.utils.clip_grad_norm_(model._denoise_fn.parameters(), 1.0)
+        optimizer.step()
+        scheduler.step()
 
-        # ——————————验证阶段 （Validation Phase）————————————————————————
+        running_loss     += loss.detach()
+        running_loss_num += loss_num.detach()
+        running_loss_cat += loss_cat.detach()
+        running_batches  += 1
+
+        # 每 eval_every 个 step：验证 / 记录 / 早停判断 / checkpoint 候选池更新
+        if step % eval_every != 0:
+            continue
+        if running_batches == 0:
+            print(f"Warning: Step {step} 附近无有效训练批次，跳过本次验证。")
+            continue
+
+        avg_train_loss = (running_loss     / running_batches).item()
+        avg_train_num  = (running_loss_num / running_batches).item()
+        avg_train_cat  = (running_loss_cat / running_batches).item()
+        running_loss     = torch.zeros((), device=model.device)
+        running_loss_num = torch.zeros((), device=model.device)
+        running_loss_cat = torch.zeros((), device=model.device)
+        running_loss = running_loss_num = running_loss_cat = 0.0
+        running_batches = 0
+
+        # 验证阶段 （Validation Phase）
         avg_val_loss = None
         if val_dataloader is not None:
             model._denoise_fn.eval()
             if marginal_tracker is not None:
                 marginal_tracker.eval()
 
-            epoch_val_loss      = 0.0
-            val_valid_batches   = 0
+            epoch_val_loss    = 0.0
+            val_valid_batches = 0
 
             with torch.no_grad():
                 for batch_x_val, batch_y_val in val_dataloader:
                     batch_x_val, batch_y_val = batch_x_val.to(model.device), batch_y_val.to(model.device)
                     val_loss, _, _, _ = model.compute_loss(
-                        batch_x_val, batch_y_val, marginal_tracker=marginal_tracker) 
-                    
+                        batch_x_val, batch_y_val, marginal_tracker=marginal_tracker)
+
                     if torch.isnan(val_loss) or torch.isinf(val_loss):
-                        print(f"跳过 NaN 或 Inf 验证批次 (Epoch {epoch + 1})") 
+                        print(f"跳过 NaN 或 Inf 验证批次 (Step {step})")
                         continue
 
                     epoch_val_loss += val_loss.item()
@@ -321,51 +202,43 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
             if val_valid_batches > 0:
                 avg_val_loss = epoch_val_loss / val_valid_batches
             else:
-                print(f"Warning: Epoch {epoch + 1} 无有效验证批次。")
+                print(f"Warning: Step {step} 无有效验证批次。")
 
-        # ————————————记录损失历史 ——————————————————————————————————————————————————————————————
-        history.append(avg_train_loss, avg_train_num, avg_train_cat, avg_val_loss, epoch)
+            # 验证结束，切回训练模式，继续下一段 step
+            model._denoise_fn.train()
+            if marginal_tracker is not None:
+                marginal_tracker.train()
 
-        # ————————————EMA监控 ———————————————————————————————————————————————————————————————————
-        raw_monitor = (avg_val_loss if (USE_VAL_MONITOR and avg_val_loss is not None) 
-                       else avg_train_loss
-        )
+        # 记录损失历史
+        history.append(avg_train_loss, avg_train_num, avg_train_cat, avg_val_loss, step)
+        # EMA监控 
+        raw_monitor = (avg_val_loss if (USE_VAL_MONITOR and avg_val_loss is not None) else avg_train_loss)
 
-        ema_monitor_loss = (
-            raw_monitor if ema_monitor_loss is None
-            else EMA_ALPHA * raw_monitor + (1 - EMA_ALPHA) * ema_monitor_loss
-        )
-        current_monitor_loss = avg_train_loss
+        ema_monitor_loss = (raw_monitor if ema_monitor_loss is None
+            else EMA_ALPHA * raw_monitor + (1 - EMA_ALPHA) * ema_monitor_loss)
+        current_monitor_loss = ema_monitor_loss
 
-        # ———————————————— Checkpoint Ensemble 候选池更新——————————————————————————————————————————
+        # Checkpoint Ensemble 候选池更新
         current_state = {k: v.cpu().clone() for k, v in model._denoise_fn.state_dict().items()}
         top_k_states.append((current_monitor_loss, current_state))
         top_k_states.sort(key=lambda x: x[0])
         if len(top_k_states) > ENSEMBLE_K:
-            top_k_states.pop() #移除最差的， 保留最好的 K 个
+            top_k_states.pop()  # 移除最差的， 保留最好的 K 个
 
-        # ———————————————— 早停判断—————————————————————————————————————————————————————————————————
-        if current_monitor_loss < best_monitor_loss * (1- MIN_RELATIVE_IMPROVEMENT): # 引入一个小的余量，避免过于敏感
+        # 早停判断（单位：验证间隔次数）
+        if current_monitor_loss < best_monitor_loss - MIN_RELATIVE_IMPROVEMENT * abs(best_monitor_loss):
             best_monitor_loss = current_monitor_loss
             best_state        = current_state
-            history.set_best(epoch, best_monitor_loss)
+            history.set_best(step, best_monitor_loss)
             patience_counter = 0
         else:
             patience_counter += 1
 
-        # ————————Scheduler 步进 （每epoch一次）——————————————————————————————————————————————————————
-        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            scheduler.step(avg_val_loss if avg_val_loss is not None else avg_train_loss)
-        else:
-            scheduler.step()
-
-        #scheduler.step()
-        
-        # ———————— 定期打印 ————————————————————————————————————————————————————————————————————————————
-        if (epoch + 1) % 50 == 0 or epoch == 0:
+        # 定期打印
+        if step % log_every == 0:
             current_lr = optimizer.param_groups[0]['lr']
             log_str = (
-                f"Epoch [{epoch+1:>4}/{train_cfg.epochs}] "
+                f"Step [{step:>6}/{total_steps}] "
                 f"Train Tot: {avg_train_loss:.4f}  "
                 f"(Num: {avg_train_num:.4f}, Cat: {avg_train_cat:.4f})"
                 f"lr: {current_lr}"
@@ -373,24 +246,21 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
             if avg_val_loss is not None:
                 log_str += f" | Val Tot: {avg_val_loss:.4f}"
             log_str += (
-                f" | Monitor(EMA): {current_monitor_loss:.4f} " # EMA值
+                f" | Monitor(EMA): {current_monitor_loss:.4f} "  # EMA值
                 f" | Raw: {raw_monitor: .4f}"  # 原始值
                 f"| Best Mon: {best_monitor_loss:.4f} "
                 f"| Patience: {patience_counter}/{train_cfg.patience}"
             )
-            
             print(log_str)
-            
+
         if patience_counter >= train_cfg.patience:
-            print(f"⏹️  Early stopping @ Epoch {epoch + 1}  "
-                  f"(最优: Epoch {history.best_epoch + 1}, "
+            print(f"⏹️  Early stopping @ Step {step}  "
+                  f"(最优: Step {history.best_step}, "
                   f"监控损失 {history.best_monitor_loss:.4f})"
                   )
-            break
-    
-    # =======================================================================
+            stop_training = True
+
     # 训练结束，权重恢复
-    # =======================================================================
     if is_minority and len(top_k_states) > 1:
         # minority 模式：对最优K个checkpoint做加权平均
         print(f"🔀 对 {len(top_k_states)} 个最优 checkpoint 做权重平均...")
@@ -407,6 +277,6 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
         print(f"✅ 权重平均完成")
     elif best_state is not None:
         model._denoise_fn.load_state_dict(best_state)
-        print(f"🔁 已恢复 Epoch {history.best_epoch + 1} 的最优权重")
-            
+        print(f"🔁 已恢复 Step {history.best_step} 的最优权重")
+
     print(f"\n✅ 训练完成 | {history.summary()}")

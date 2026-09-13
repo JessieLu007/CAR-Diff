@@ -5,9 +5,10 @@
 """
 import os
 import json
+from pathlib import Path
 import torch
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold, KFold
 
 from core.data_processor import TabularDataProcessor
 
@@ -20,9 +21,12 @@ def split_dataset(
     val_ratio: float = 0.1,
     test_ratio: float = 0.2,
     random_seed: int = 0,
-    split_dir: str = "splits", # 划分索引存放目录
+    split_dir: str = "splits",
     ) -> dict:
     assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, "训练、验证和测试集比例之和必须为1"
+
+    #ref_dir = Path(split_dir) / f"{dataset_name}_seed{random_seed}"
+    #train_path = ref_dir / "real_"
 
     split_path = os.path.join(split_dir, f"{dataset_name}_seed{random_seed}.json")
 
@@ -100,6 +104,90 @@ def get_or_build_imputed_reference(
         }, f, indent=4, ensure_ascii=False)
 
     return df_train_imputed, df_val_imputed, df_test_imputed
+
+
+# =========================================================
+# 5折交叉验证划分（不含验证集）—— 新增，和 split_dataset 是并列的两条路，互不影响
+# =========================================================
+def make_kfold_splits(
+    dataset_name: str,
+    df_all: pd.DataFrame,
+    target_col: str,
+    n_folds: int = 5,
+    random_seed: int = 0,
+    split_dir: str = "splits",
+) -> list:
+    """
+    生成/复用 n_folds 折的 (train_idx, test_idx)。没有验证集：不需要验证集就不切，
+    过拟合缓解交给权重衰减/dropout等训练期正则化处理。
+    和 split_dataset 一样做磁盘缓存，第一次调用才真正划分，之后复用同一份索引文件，
+    保证同一 dataset/seed/n_folds 下每次跑到的折完全一致。
+    """
+    split_path = os.path.join(split_dir, f"{dataset_name}_seed{random_seed}_{n_folds}fold.json")
+
+    if os.path.exists(split_path):
+        with open(split_path, "r", encoding="utf-8") as f:
+            folds_idx = json.load(f)
+        if len(folds_idx) != n_folds:
+            raise ValueError(
+                f"{split_path} 已存在，但折数({len(folds_idx)})和本次请求({n_folds})不一致。"
+                f"如果是有意更换折数，请删除该文件或换一个 split_dir。"
+            )
+        return folds_idx
+
+    unique_classes = df_all[target_col].nunique()
+    if unique_classes > 1:
+        splitter = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_seed)
+        split_iter = splitter.split(df_all, df_all[target_col])
+    else:
+        splitter = KFold(n_splits=n_folds, shuffle=True, random_state=random_seed)
+        split_iter = splitter.split(df_all)
+
+    folds_idx = [
+        {"train_idx": train_idx.tolist(), "test_idx": test_idx.tolist()}
+        for train_idx, test_idx in split_iter
+    ]
+
+    os.makedirs(split_dir, exist_ok=True)
+    with open(split_path, "w", encoding="utf-8") as f:
+        json.dump(folds_idx, f)
+
+    return folds_idx
+
+
+def get_fold(df_all: pd.DataFrame, folds_idx: list, fold_idx: int):
+    """按 fold_idx 从 make_kfold_splits 的结果里取出这一折的 train/test DataFrame。"""
+    idx = folds_idx[fold_idx]
+    df_train = df_all.loc[idx["train_idx"]].reset_index(drop=True)
+    df_test = df_all.loc[idx["test_idx"]].reset_index(drop=True)
+    return df_train, df_test
+
+
+def get_or_build_imputed_reference_cv(
+    processor, df_train: pd.DataFrame, df_test: pd.DataFrame,
+    dataset_name: str, random_seed: int, task: str, fold_idx: int, split_dir: str = "splits",
+):
+    """和 get_or_build_imputed_reference 是同一套逻辑，去掉了 val，按 fold_idx 单独存档。"""
+    ref_dir = os.path.join(split_dir, f"{dataset_name}_seed{random_seed}_{task}_fold{fold_idx}_imputed")
+    paths = {name: os.path.join(ref_dir, f"real_{name}_imputed.csv") for name in ("train", "test")}
+
+    if all(os.path.exists(p) for p in paths.values()):
+        return pd.read_csv(paths["train"]), pd.read_csv(paths["test"])
+
+    os.makedirs(ref_dir, exist_ok=True)
+    df_train_imputed = processor.transform_readable(df_train)
+    df_test_imputed = processor.transform_readable(df_test)
+
+    df_train_imputed.to_csv(paths["train"], index=False)
+    df_test_imputed.to_csv(paths["test"], index=False)
+
+    with open(os.path.join(ref_dir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "dataset_name": dataset_name, "random_seed": random_seed, "task": task, "fold_idx": fold_idx,
+            "n_train": len(df_train_imputed), "n_test": len(df_test_imputed),
+        }, f, indent=4, ensure_ascii=False)
+
+    return df_train_imputed, df_test_imputed
 
 
 # 2. Task 路由
