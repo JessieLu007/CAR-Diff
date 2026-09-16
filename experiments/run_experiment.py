@@ -1,10 +1,12 @@
 # 文件位置: experiments/run_experiment.py
 from dataclasses import asdict
 import json
+import torch
 import os, sys, gc, time, pickle
 import pandas as pd
 from datetime import datetime
 from contextlib import redirect_stdout
+
 
 from configs.experiment_configs import ExperimentConfig
 from experiments.data_prep import (
@@ -107,7 +109,9 @@ def run_experiment(
 
             # ---------------- DataLoader / meta_info（不用验证集，val_loader 固定传 None，
             #                   过拟合缓解交给 weight decay / dropout 等训练期正则化） ----------------
-            train_loader = build_dataloader(processor, df_model_train, y_train, exp_cfg.training.batch_size, shuffle=True)
+            train_loader = build_dataloader(processor, df_model_train, y_train, 
+                                            exp_cfg.training.batch_size, shuffle=True, 
+                                            device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
             meta_info = build_meta_info(processor, df_model_train)
 
             # ---------------- 训练 ----------------

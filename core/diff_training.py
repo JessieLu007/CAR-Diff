@@ -78,7 +78,7 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
     # Optimizer
     optimizer = torch.optim.AdamW(
         list(model._denoise_fn.parameters()) + [model.log_vars],
-        lr=train_cfg.lr, weight_decay=1e-4 if is_minority else 1e-5)
+        lr=train_cfg.lr, weight_decay=1e-4 if is_minority else 1e-5, fused=(model.device.type=="cuda"))
 
     # Scheduler
     default_warmup_steps = 500 if is_minority else 1000
@@ -166,11 +166,14 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
     running_loss_cat = torch.zeros((), device=model.device)
     running_batches  = 0
 
-    if getattr(train_cfg, 'diagnose_compile', True):
+    if getattr(train_cfg, 'diagnose_compile', False):
         batch_x, batch_y = next(iter(train_dataloader))
         explanation = torch._dynamo.explain(model.compute_loss)(
             batch_x, batch_y, marginal_tracker=marginal_tracker)
-        print(explanation)
+        print(f"Graph Count: {len(explanation.graphs)}")
+        print(f"Graph Break Count: {len(explanation.break_reasons)}")
+        for i, br in enumerate(explanation.break_reasons):
+            print(f"[{i}] {br}")
         return
     
 
@@ -191,7 +194,7 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
             batch_x = batch_x.to(model.device, non_blocking=True)
             batch_y = batch_y.to(model.device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
-            loss, _, _, _ = model.compute_loss(batch_x, batch_y, marginal_tracker=marginal_tracker)
+            loss, _, _, _ = compiled_compute_loss(batch_x, batch_y, marginal_tracker=marginal_tracker)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model._denoise_fn.parameters(), 1.0)
             optimizer.step()

@@ -26,7 +26,7 @@ from core.denoise_model_v2 import TabMLPDenoise as TabMLPDenoiseV2
 
 
 # ============================ 常改的参数都在这一块 ============================
-DATASET_NAME = common.DATASETS[1]
+DATASET_NAME = common.DATASETS[0]
 SEED = common.SEEDS[4]
 N_FOLDS = 5
 DENOISE_CLASS = TabMLPDenoiseV2          # TabMLPDenoiseV1 / TabMLPDenoiseV2
@@ -36,7 +36,7 @@ DATA_OVERRIDES = dict(
     cat_encoding_method="ordinal",
 )
 MODEL_OVERRIDES = dict(
-    dim_hidden=512,
+    dim_hidden=256,
     num_timesteps=200,
     prediction_type="eps",
     focal_mode="off",              # "off" | "fixed" | "adaptive"
@@ -45,7 +45,7 @@ MODEL_OVERRIDES = dict(
     gamma_base=1,
     focal_alpha_scale=1.1,
     gma_loss_weight=0.00,
-    corr_weight=0.05,
+    corr_weight=0.05, #0.05
     corr_t_ratio=0.5,
     posterior_switch_ratio=1.0,
     cat_temperature_cap=1,
@@ -56,9 +56,13 @@ TRAINING_OVERRIDES = dict(
     task="full_data",              # "full_data" | "minority_uncond" | "minority_cond"
     objective="fidelity",
     batch_size=64,
-    total_steps=20000,             # 不用验证集，靠固定步数 + weight decay/dropout 控过拟合
+    target_epochs=100,             # 不用验证集，靠固定步数 + weight decay/dropout 控过拟合
     lr=1e-3,
     uncond_p=0.1,
+    enable_amp=True,
+    diagnose_compile=False,
+    profile_mode=False,
+    profile_steps=20,
 )
 SAMPLING_OVERRIDES = dict(
     temperature_fidelity=1,
@@ -77,6 +81,10 @@ def set_seed(seed: int = 42):
 
 
 def build_config():
+    from configs.experiment_configs import TrainingConfig
+    import dataclasses
+    print("TrainingConfig file:", TrainingConfig.__module__)
+    print("fields:", [f.name for f in dataclasses.fields(TrainingConfig)])
     base_cfg = make_default_experiment_config()
     return base_cfg.with_overrides(
         data=DATA_OVERRIDES,

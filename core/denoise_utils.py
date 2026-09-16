@@ -4,9 +4,6 @@ import torch.nn as nn
 import math
 
 
-# ─────────────────────────────────────────────
-# 工具函数
-# ─────────────────────────────────────────────
 def timestep_embedding(timesteps, dim, max_period=10000):
     half = dim // 2
     freqs = torch.exp(
@@ -21,9 +18,6 @@ def timestep_embedding(timesteps, dim, max_period=10000):
     return embedding
 
 
-# ─────────────────────────────────────────────
-# 单列数值编码
-# ─────────────────────────────────────────────
 class PeriodicEmbedding(nn.Module):
     """
     单列数值编码：sin/cos 展开 → 线性投影到 embed_dim。
@@ -56,27 +50,7 @@ class RFFEmbedding(nn.Module):
 
 
 class MultiScaleNumEncoder(nn.Module):
-    """
-    「少数值列」专用编码器：单列 → n_expand 个多尺度 Token。
-
-    动机：
-        当 num_numerical 较少（1~3）时，num_transformer 因序列长度不足而
-        被跳过，且 reverse_cross_attn 的 KV 侧信号量不足。
-        本模块将同一列在 n_expand 个不同频率尺度下独立编码，构造长度为
-        n_expand 的 Token 序列，从而：
-          1. 使 num_transformer 可运行（_eff_num_tokens > 1）
-          2. 为 cross_attn 提供更丰富的 Key/Value 序列
-          3. 不同尺度编码覆盖粗粒度（低频）→ 细粒度（高频）的数值结构
-
-    频率尺度初始化：
-        n_expand=1 → [1.0]（退化为标准 PeriodicEmbedding）
-        n_expand=2 → [0.1, 10.0]（粗 + 细）
-        n_expand=3 → [0.1, 1.0, 10.0]（粗 + 原始 + 细）
-        n_expand=4 → [0.1, 0.46, 2.15, 10.0]（对数均匀分布）
-        所有尺度均可学习，训练后自适应优化。
-
-    输出：[B] → [B, n_expand, D]
-    """
+   
     def __init__(self, embed_dim: int, n_expand: int, n_frequencies: int = 16):
         super().__init__()
         assert n_expand >= 1
@@ -104,11 +78,11 @@ class MultiScaleNumEncoder(nn.Module):
         # softmax 后乘以 n_expand，使初始期望幅度 ≈ 1（无偏缩放）
         importance  = torch.softmax(self.token_importance, dim=0) * len(self.encoders)
 
-        tokens = [
-            importance[i] * enc(x_col * freq_scales[i])
-            for i, enc in enumerate(self.encoders)
-        ]
-        return torch.stack(tokens, dim=1)                          # [B, n_expand, D]
+        x_scaled = x_col.unsqueeze(-1) * freq_scales
+        tokens = torch.stack(
+            [enc(x_scaled[:, i]) for i, enc in enumerate(self.encoders)], dim=1,
+        )
+        return tokens * importance.view(1, -1, 1)                         # [B, n_expand, D]
 
 
 class ColumnTypeEmbedding(nn.Module):
@@ -122,7 +96,7 @@ class ColumnTypeEmbedding(nn.Module):
         nn.init.normal_(self.emb.weight, std=0.02)     # 小初始化，不干扰早期训练
 
     def get(self, type_id: int, device: torch.device) -> torch.Tensor:
-        """返回 [D] 类型向量，可直接广播加到 [B, D] 的 Token 上。"""
+        return self.emb.weight[type_id]
         return self.emb(torch.tensor(type_id, dtype=torch.long, device=device))
 
 
@@ -188,24 +162,7 @@ class CrossAttentionBlock(nn.Module):
 
 
 class NumToCatFiLM(nn.Module):
-    """
-    「少数值列」专用：数值 Token 均值 → 类别序列轻量 FiLM 调制。
-
-    动机：
-        在 few_num_mode 下，即使通过 MultiScaleNumEncoder 扩展了数值 Token 数量，
-        reverse_cross_attn（cat ← num）收到的 KV 信号仍以数值侧为主；
-        本模块提供一条更直接的 num→cat 调制路径，以残差方式叠加在
-        reverse_cross_attn 之后，作为互补信号。
-
-        gate_scale 初始化为 0（tanh(0)=0），训练初期调制幅度严格为零，
-        不干扰正常训练启动；后期逐步学习合适的调制强度。
-
-    输入：
-        cat_seq: [B, N_cat, D]
-        num_seq: [B, N_eff, D]  （已经过 cross_attn 增强的数值序列）
-    输出：
-        [B, N_cat, D]（与 cat_seq 形状相同）
-    """
+    
     def __init__(self, dim_hidden: int):
         super().__init__()
         self.num_to_cat = nn.Linear(dim_hidden, dim_hidden * 2)

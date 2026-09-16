@@ -62,6 +62,7 @@ def build_meta_info(processor, df_features: pd.DataFrame) -> dict:
         counts = np.bincount(cat_col_data, minlength=int(n_classes))
         true_marginals.append(torch.tensor(counts / counts.sum(), dtype=torch.float32))
 
+    info['num_classes'] = [int(n) for n in info['num_classes']]
     info['true_marginals'] = true_marginals
     return info
 

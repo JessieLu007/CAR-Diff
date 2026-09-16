@@ -100,8 +100,13 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         """
         self.meta_info              = meta_info
         self.num_numerical_features = meta_info['num_numerical']
-        self.num_classes            = meta_info['num_classes']
-        self.true_marginals         = meta_info['true_marginals']
+        self.num_classes            = [int(n) for n in meta_info['num_classes']]
+        self.true_marginals         = [m.to(self.device) for m in meta_info['true_marginals']]
+
+        self._marginal_imbalance_cache = [
+            max(0.0, 1.0 - 2.0 * prior.min().item())
+            for prior in self.true_marginals
+        ]
 
         self._init_class_expanded()
 
@@ -243,7 +248,8 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         prec_cat = torch.exp(-self.log_vars[1])
 
         total_loss = (prec_num * loss_num + self.log_vars[0]) + \
-                     (prec_cat * loss_cat + self.log_vars[1])
+                     (prec_cat * loss_cat + self.log_vars[1]) + \
+                     self.model_cfg.corr_weight * loss_corr
 
         return total_loss, loss_num, loss_cat, loss_corr
 
@@ -254,5 +260,6 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
 
         offsets = np.append([0], np.cumsum(self.num_classes))
         self.slices_for_classes = [
-            np.arange(offsets[i], offsets[i + 1]) for i in range(len(self.num_classes))
+            torch.arange(int(offsets[i]), int(offsets[i+1]), device=self.device)
+            for i in range(len(self.num_classes))
         ]

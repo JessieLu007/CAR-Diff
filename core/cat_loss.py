@@ -15,11 +15,12 @@ class MarginalEMATracker(nn.Module):
             self.register_buffer(f"ema_{i}", prior.clone().float())
 
     @torch.no_grad()
+    @torch.compiler.disable
     def update(self, model_cat_out: torch.Tensor, slices: list):
         for i, ix in enumerate(slices):
             batch_m = F.softmax(model_cat_out[:, ix].float(), dim=1).mean(0)
             old = getattr(self, f"ema_{i}")
-            setattr(self, f"ema_{i}", self.momentum * old + (1 - self.momentum) * batch_m)
+            setattr(self, f"ema_{i}", (self.momentum * old + (1 - self.momentum) * batch_m).clone())
 
     def __getitem__(self, i: int) -> torch.Tensor:
         return getattr(self, f"ema_{i}")
