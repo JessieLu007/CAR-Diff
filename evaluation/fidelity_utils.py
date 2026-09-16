@@ -5,6 +5,8 @@ import pandas as pd
 from scipy import stats
 from typing import Optional
 
+from scipy.spatial.distance import cdist
+
 from evaluation.fidelity_config import EvalConfig
 
 from sklearn.metrics import (
@@ -296,3 +298,30 @@ def _kendall_mat(df: pd.DataFrame, num_cols: list[str]) -> pd.DataFrame:
                     else 0.0
                 )
     return pd.DataFrame(C, index=num_cols, columns=num_cols)
+
+
+
+# fidelity_utils.py 新增
+def _encode_mixed(ref_df, *other_dfs, num_cols, cat_cols):
+    encoders = {c: LabelEncoder().fit(ref_df[c].astype(str)) for c in cat_cols}
+    num_arrays, cat_arrays = [], []
+    for df in (ref_df, *other_dfs):
+        num_arrays.append(df[num_cols].values.astype(float))
+        if cat_cols:
+            cat_arrays.append(np.column_stack([
+                df[c].astype(str).map(
+                    lambda v, _le=encoders[c]: _le.transform([v])[0] if v in _le.classes_ else -1
+                ).to_numpy() for c in cat_cols
+            ]))
+        else:
+            cat_arrays.append(np.empty((len(df), 0)))
+    ranges = np.ptp(np.vstack(num_arrays), axis=0)
+    ranges = np.where(ranges == 0, 1e-5, ranges)
+    return num_arrays, cat_arrays, ranges
+
+def _gower_dist(num_a, cat_a, num_b, cat_b, ranges):
+    n_num, n_cat = num_a.shape[1], cat_a.shape[1]
+    d = cdist(num_a / ranges, num_b / ranges, metric='cityblock')
+    if n_cat:
+        d = d + cdist(cat_a, cat_b, metric='hamming') * n_cat
+    return d / (n_num + n_cat)

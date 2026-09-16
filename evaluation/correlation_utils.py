@@ -15,7 +15,7 @@ def compute_crps(train: pd.DataFrame, syn: pd.DataFrame, top_k: int = 10):
 
     clf = XGBClassifier(
         n_estimators=300,
-        max_depath=5,
+        max_depth=5,
         learning_rate=0.05,
         random_state=42
     )

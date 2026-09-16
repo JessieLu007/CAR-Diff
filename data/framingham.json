@@ -7,6 +7,6 @@
     "cat_col_idx": [0,2,3,5,6,7,8], 
     "target_col_idx": [15], 
     "file_type": "csv",
-    "data_path": "data/framingham/framingham.csv",
+    "data_path": "data/framingham.csv",
     "test_path": null
 }

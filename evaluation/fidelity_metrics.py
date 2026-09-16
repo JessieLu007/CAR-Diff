@@ -22,7 +22,7 @@ except ImportError:
 
 from evaluation.fidelity_config import EvalConfig
 from evaluation.fidelity_utils import (
-    _subset, _active_cols, _tvd_cont, _tvd_cat, _corr_diff, _encode_scale, 
+    _encode_mixed, _gower_dist, _subset, _active_cols, _tvd_cont, _tvd_cat, _corr_diff, _encode_scale, 
     _score_clf, _kendall_mat
 )
 
@@ -134,22 +134,83 @@ def metric_alpha_beta(
         )
         return {'alpha_precision': float('nan'), 'beta_recall': float('nan')}
 
-    X_ref, X_fake = _encode_scale(ref[all_feat], fake[all_feat], cat_cols=c_cols)
+    (X_ref_n, X_fake_n), (X_ref_c, X_fake_c), ranges = _encode_mixed(
+    ref[all_feat],
+    fake[all_feat],
+    num_cols=n_cols,
+    cat_cols=c_cols,
+)
 
-    # local radius of each real sample = distance to its k-th nearest neighbor
-    dist_rr = NearestNeighbors(n_neighbors=k + 1).fit(X_ref).kneighbors(X_ref)[0]
-    radius  = dist_rr[:, k]                # shape: [N_ref]
+    # --------------------------------------------------
+    # 1. Real manifold radii
+    # --------------------------------------------------
+    D_rr = _gower_dist(
+        X_ref_n, X_ref_c,
+        X_ref_n, X_ref_c,
+        ranges,
+    )
 
-    # α-Precision: for each fake sample, check if it falls within the
-    # local radius of its nearest real neighbor
-    dist_fr, idx_fr = NearestNeighbors(n_neighbors=k).fit(X_ref).kneighbors(X_fake)
-    alpha = float(np.mean(dist_fr[:, 0] <= radius[idx_fr[:, 0]]))
+    np.fill_diagonal(D_rr, np.inf)
 
-    # β-Recall: for each real sample, check if a fake sample is close enough
-    dist_rf = NearestNeighbors(n_neighbors=k).fit(X_fake).kneighbors(X_ref)[0]
-    beta    = float(np.mean(dist_rf[:, 0] <= radius))
+    real_radius = np.partition(
+        D_rr,
+        k - 1,
+        axis=1
+    )[:, k - 1]
 
-    return {'alpha_precision': alpha, 'beta_recall': beta}
+
+    # --------------------------------------------------
+    # 2. Fake manifold radii
+    # --------------------------------------------------
+    D_ff = _gower_dist(
+        X_fake_n, X_fake_c,
+        X_fake_n, X_fake_c,
+        ranges,
+    )
+
+    np.fill_diagonal(D_ff, np.inf)
+
+    fake_radius = np.partition(
+        D_ff,
+        k - 1,
+        axis=1
+    )[:, k - 1]
+
+
+    # --------------------------------------------------
+    # 3. Cross distances
+    # --------------------------------------------------
+    D_rf = _gower_dist(
+        X_ref_n, X_ref_c,
+        X_fake_n, X_fake_c,
+        ranges,
+    )
+    # shape: [N_ref, N_fake]
+
+
+    # --------------------------------------------------
+    # 4. Alpha / Precision
+    # --------------------------------------------------
+    alpha = float(
+        np.mean(
+            (D_rf <= real_radius[:, None]).any(axis=0)
+        )
+    )
+
+
+    # --------------------------------------------------
+    # 5. Beta / Recall
+    # --------------------------------------------------
+    beta = float(
+        np.mean(
+            (D_rf <= fake_radius[None, :]).any(axis=1)
+        )
+    )
+
+    return {
+        'alpha_precision': alpha,
+        'beta_recall': beta,
+    }
 
 
 def metric_c2st(

@@ -9,6 +9,7 @@ def extract(a, t, x_shape):
     out = a.gather(-1, t)
     return out.reshape(b, *((1,)*(len(x_shape)-1))).expand(x_shape)
 
+@torch._dynamo.disable
 def index_to_log_onehot(x, num_classes):
     # 将索引转换为对数one-hot形式，用于多项式扩散
     onehots = []

@@ -4,7 +4,9 @@ import pickle
 
 
 # 训练数据集名称
-DATASETS = ['breast_cancer', 'diabetes_risk', 'framingham', 'hepatitis', 'pima', 'tcga', 'thyroid']
+DATASETS = ['framingham', 'hepatitis']
+SEEDS = [2026, 2027, 2028, 2029, 2030]
+
 # 对比方法名称
 BASELINE_MODELS = ['smotenc','ctgan', 'tvae', 'tabddpm', 'tabsyn']
 

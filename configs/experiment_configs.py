@@ -54,15 +54,22 @@ class ModelConfig:
 @dataclass
 class TrainingConfig:
     """训练数据范围与建模范式控制"""
-    batch_size: int = 256
-    epochs: int = 1000
+    batch_size: int = 128
+    total_steps: int = None
+    target_epochs: int = 100
     use_two_phase: bool = False
     lr: float = 1e-4
     uncond_p: float = 0.1   # CFG 空条件丢弃率（仅 *_cond 范式生效）
-    patience: int = 20
+    patience: int = 10
+    eval_every: int = 100
 
     use_label_smoothing: bool = False # 是否对minority_cond的真实标签做随机平滑
     label_smooth_prob: float = 0.05   # 平滑概率，含义同diff_training.smooth_labels
+    enable_amp: bool = False
+    diagnose_compile: bool = False
+    profile_mode: bool = True
+    profile_steps:int  = 20
+    enable_compile: bool = True
 
     # ------------------------------------------------------------------
     # task：训练范式，调用方始终传入全量数据，内部自动路由
