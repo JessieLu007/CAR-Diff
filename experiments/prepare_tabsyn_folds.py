@@ -17,7 +17,7 @@
 import os, json, shutil, argparse
 
 # ============================ 常改的参数 ============================
-TABSYN_ROOT = "/path/to/tabsyn"           # 改成本地 tabsyn 仓库路径
+TABSYN_ROOT = "E:/projects/tabsyn-main"           # 改成本地 tabsyn 仓库路径
 DDPM_MED_SPLIT_DIR = "splits"             # 对应 ddpm_med 里 run_experiment 的 split_dir
 TASK = "full_data"                        # 对应 exp_cfg.training.task
 TASK_TYPE = "binclass"                    # tabsyn 需要: "binclass" | "regression"

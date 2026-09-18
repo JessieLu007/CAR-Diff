@@ -37,6 +37,7 @@ def run_experiment(
     target_minority_class: int = 1,
     split_dir: str = "splits",
     evaluator_fn=None,   # 预留：(df_train_imputed, df_test_imputed, df_fake) -> dict
+    only_splits=True,
 ):
     start_time = time.time()
     task = exp_cfg.training.task
@@ -85,27 +86,27 @@ def run_experiment(
             )
 
             # ---------------- 插补后可读数据集（只依赖 processor，不依赖训练/生成，训练开始前就能算好并落盘） ----------------
+            # 数据保存只在此保存一次，缓存在splits/下， results不再重复保存，靠split_info.json里的imputed_cache_dir定位回去
             df_train_imputed, df_test_imputed = get_or_build_imputed_reference_cv(
                 processor, df_train, df_test, dataset_name,
                 exp_cfg.pipeline.random_seed, task, fold_idx, split_dir,
                 )
+            imputed_cache_dir = os.path.join(
+                split_dir, f"{dataset_name}_seed{exp_cfg.pipeline.random_seed}_{task}_fold{fold_idx}_imputed"
+            )
 
-            # ---------------- 落盘：原始 / 插补后的划分（同样不依赖训练/生成，提前保存） ----------------
-            real_frames = {
-                "real_train": df_train, "real_test": df_test,
-                "real_train_imputed": df_train_imputed, "real_test_imputed": df_test_imputed,
-            }
-            for name, d in real_frames.items():
-                d.to_csv(os.path.join(save_path, f"{name}.csv"), index=False)
-
-            # ---------------- 划分信息（供后续复核/对比使用） ----------------
+            # ---------------- 划分信息（供后续复核/对比使用；real_train/test 的实际数据在 imputed_cache_dir 下） ----------------            
             split_info = {
                 "n_folds": n_folds, "fold_idx": fold_idx, 
                 "random_seed": exp_cfg.pipeline.random_seed,
                 "n_train": len(df_train), "n_test": len(df_test),
+                "imputed_cache_dir": imputed_cache_dir,
             }
             with open(os.path.join(save_path, "split_info.json"), "w", encoding="utf-8") as f:
                 json.dump(split_info, f, indent=4, ensure_ascii=False)
+
+            if only_splits:
+                return
 
             # ---------------- DataLoader / meta_info（不用验证集，val_loader 固定传 None，
             #                   过拟合缓解交给 weight decay / dropout 等训练期正则化） ----------------
@@ -153,7 +154,7 @@ def run_experiment(
             }
 
 
-            # ---------------- 详细实验配置（含数据集信息，此前遗漏，现补回） ----------------
+            # ---------------- 详细实验配置（含数据集信息） ----------------
             final_config = {
                 "dataset_info": {
                     "name": dataset_name,

@@ -27,7 +27,7 @@ from core.denoise_model_v2 import TabMLPDenoise as TabMLPDenoiseV2
 
 # ============================ 常改的参数都在这一块 ============================
 DATASET_NAME = common.DATASETS[0]
-SEED = common.SEEDS[4]
+SEED = common.SEEDS[0]
 N_FOLDS = 5
 DENOISE_CLASS = TabMLPDenoiseV2          # TabMLPDenoiseV1 / TabMLPDenoiseV2
 
@@ -121,6 +121,7 @@ def run_one_fold(dataset_name, fold_idx, df_all, target_col, num_col_idx, cat_co
         exp_cfg=exp_cfg,
         fold_idx=fold_idx,
         n_folds=N_FOLDS,
+        only_splits=True,
     )
     gc.collect()
     return results
