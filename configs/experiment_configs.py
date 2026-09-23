@@ -43,7 +43,7 @@ class ModelConfig:
     corr_t_ratio: float = 0.2           # 相关性触发的噪声阶段比率
 
     # CFG 与后验参数
-    null_class_idx: int = 2
+    null_class_idx: int = 5
     posterior_switch_ratio: float = 0.3
     cat_temperature_cap: float = 0.6
 
@@ -62,6 +62,7 @@ class TrainingConfig:
     uncond_p: float = 0.1   # CFG 空条件丢弃率（仅 *_cond 范式生效）
     patience: int = 10
     eval_every: int = 100
+    last_batch_strategy: str = "drop" # "drop" | "pad"
 
     use_label_smoothing: bool = False # 是否对minority_cond的真实标签做随机平滑
     label_smooth_prob: float = 0.05   # 平滑概率，含义同diff_training.smooth_labels

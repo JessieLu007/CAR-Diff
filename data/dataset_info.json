@@ -1,15 +1,62 @@
 {
+    "chronic_kidney_disease":{
+        "numerical":["age", "bp", "sg", "bgr", "bu", "sc", "sod", "pot", "hemo", "pcv", "wbcc", "rbcc"],
+        "categorical":["al", "su", "rbc", "pc", "pcc", "ba","htn", "dm", "cad", "appet", "pe", "ane"],
+        "target": "class",
+        "minority_class": "ckd",
+        "target_num_classes": 2
+    },
+
+    "diabetic_data":{
+        "numerical": ["time_in_hospital", "num_lab_procedures", "num_procedures", "num_medications","number_outpatient", "number_emergency",
+        "number_inpatient", "number_diagnoses"],
+        "categorical":["race", "gender", "age", "admission_type_id", "discharge_disposition_id", "admission_source_id", "payer_code", 
+        "medical_specialty", "diag_1", "diag_2","diag_3", "metformin", "repaglinide", "nateglinide", "chlorpropamide", "glimepiride",
+        "acetohexamide", "glipizide", "glyburide", "tolbutamide", "pioglitazone", "rosiglitazone", "acarbose", "miglitol", "troglitazone",
+        "tolazamide", "examide", "citoglipton", "insulin", "glyburide-metformin", "glipizide-metformin", "glimepiride-pioglitazone", 
+        "metformin-rosiglitazone", "metformin-pioglitazone", "change", "diabetesMed"],
+        "target": "readmitted",
+        "minority_class": "<30",
+        "target_num_classes": 3
+    },
+
+    "hcv_egy_data":{
+        "numerical": ["Age", "BMI", "WBC", "RBC", "Plat", "AST 1", "ALT 1", "ALT4", "ALT 12", "ALT 24", "ALT 36",
+        "ALT 48", "ALT after 24 w", "RNA Base", "RNA 4", "RNA 12", "RNA EOT", "RNA EF"],
+        "categorical": ["Gender", "Fever", "Nausea/Vomting", "Headache", "Diarrhea", "Fatigue & generalized bone ache",
+        "Jaundice", "Epigastric pain", "HGB", "Baseline histological Grading"],
+        "target": "Baselinehistological staging",
+        "minority_class": 4,
+        "target_num_classes": 4
+    },
+
     "framingham": {
-        "categorical": ["male", "education", "currentSmoker", "BPMeds", "prevalentStroke", "prevalentHyp", "diabetes"],
         "numerical":["age", "cigsPerDay", "totChol", "sysBP", "diaBP", "BMI", "heartRate", "glucose"],
-        "target":"TenYearCHD"
+        "categorical": ["male", "education", "currentSmoker", "BPMeds", "prevalentStroke", "prevalentHyp", "diabetes"],
+        "target":"TenYearCHD",
+        "minority_class": 1,
+        "target_num_classes": 2
     },
 
     "hepatitis": {
+        "numerical":["age", "bilirubin", "alk_phosphate", "sgot", "albumin", "protime"], 
         "categorical": ["sex", "steroid", "antivirals", "fatigue", "malaise", 
         "anorexia", "liver_big", "liver_firm", "spleen_palpable", "spiders", "ascites",
         "varices", "histology"],
-        "numerical":["age", "bilirubin", "alk_phosphate", "sgot", "albumin", "protime"], 
-        "target":"class"
+        "target":"class",
+        "minority_class": 1,
+        "target_num_classes": 2
+    },
+
+    "risk_factors_cervical_cancer":{
+        "numerical": ["Age", "Number of sexual partners", "First sexual intercourse", "Num of pregnancies",
+        "Smokes (years)", "Smokes (packs/year)", "Hormonal Contraceptives (years)", "IUD (years)"],
+        "categorical": ["Smokes", "Hormonal Contraceptives", "IUD", "STDs", "STDs (number)", "STDs:condylomatosis",
+        "STDs:cervical condylomatosis", "STDs:vaginal condylomatosis", "STDs:vulvo-perineal condylomatosis",
+        "STDs:syphilis", "STDs:pelvic inflammatory disease", "STDs:genital herpes", "STDs:molluscum contagiosum",
+        "STDs:AIDS", "STDs:HIV", "STDs:Hepatitis B", "STDs:HPV", "STDs: Number of diagnosis", "Dx:Cancer", "Dx:CIN", "Dx"],
+        "target": "Biopsy",
+        "minority_class": 1,
+        "target_num_classes": 2
     }
 }

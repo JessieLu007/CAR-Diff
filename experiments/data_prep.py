@@ -105,6 +105,62 @@ def get_or_build_imputed_reference(
 
     return df_train_imputed, df_val_imputed, df_test_imputed
 
+from typing import Hashable
+
+def encode_target(
+    df:pd.DataFrame, target_col: str, class_order: list | None=None,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    把target_col映射成0,..K-1的整数，返回（新df, 映射表）
+    class_order给定按其顺序编码（便于跨fold保持一致），否则按sorted(unique)稳定排序
+    """
+    df = df.copy()
+    if class_order is None:
+        class_order = sorted(df[target_col].dropna().unique().tolist())
+
+    mapping = {cls: i for i, cls in enumerate(class_order)}
+    unknown = set(df[target_col].dropna().unique()) - set(mapping)
+    if unknown:
+        raise ValueError(f"{target_col} 出现未在 class_order 中的取值: {unknown}")
+
+    df[target_col] = df[target_col].map(mapping).astype("int64")
+    return df, {"class_order": class_order, "mapping": mapping}
+
+
+def decode_target(y_int, mapping: dict):
+    """0..K-1 → 原始类名（生成样本后还原用）"""
+    inv = {v: k for k, v in mapping.items()}
+    if hasattr(y_int, "tolist"):
+        return [inv[int(v)] for v in y_int.tolist()]
+    return inv[int(y_int)]
+
+
+def resolve_minority_class(
+    df: pd.DataFrame, target_col: str,
+    target_minority_class: Hashable | None = None,
+    verbose: bool = True,
+) -> Hashable:
+        
+    counts = df[target_col].value_counts()
+    if target_minority_class is not None:
+        if target_minority_class not in counts.index:
+            str_matches = [c for c in counts.index if str(c) == str(target_minority_class)]
+            if len(str_matches) == 1:
+                target_minority_class = str_matches[0]
+            else:
+                raise ValueError(
+                    f"指定的少数类{target_minority_class!r}不在 {target_col}的取值里： "
+                    f"{counts.index.tolist()}"
+                    )
+        chosen = target_minority_class
+    else:
+        chosen = counts.idxmin()
+    if verbose:
+        print(f"🎯 少数类 = {chosen!r} | 分布 = {counts.to_dict()}")
+        if (counts == counts.min()).sum() > 1:
+            print("⚠️ 并列最少类，已取 idxmin；建议显式指定")
+    return chosen
+
 
 # =========================================================
 # 5折交叉验证划分（不含验证集）—— 新增，和 split_dataset 是并列的两条路，互不影响
@@ -191,18 +247,22 @@ def get_or_build_imputed_reference_cv(
 
 
 # 2. Task 路由
-def route_task_data(df: pd.DataFrame, target_col: str, task: str, null_class_idx: int):
+def route_task_data(df: pd.DataFrame, target_col: str, task: str, 
+                    null_class_idx: int, target_minority_class: Hashable | None = None,):
     """
     full_data       —— target_col 作为普通类别特征保留，y 全为 null
     minority_uncond —— 仅少数类（label==1），target_col 剥离，y 全为 null
-    minority_cond   —— 全量数据，target_col 剥离为条件标签
+    minority_cond   —— 全量数据，target_col 剥离为条件标签(y 已是 0..K-1 整数)
+    注意：进入本函数前，若 task 需要 label，target_col 应已由 TargetMapper 整数化。
     """
     if task == "full_data":
         df_features = df.copy()
         y = torch.full((len(df),), null_class_idx, dtype=torch.long)
 
     elif task == "minority_uncond":
-        df_minority = df[df[target_col] == 1].copy()
+        if target_minority_class is None:
+            target_minority_class = df[target_col].value_counts().idxmin()
+        df_minority = df[df[target_col] == target_minority_class].copy()
         df_features = df_minority.drop(columns=[target_col])
         y = torch.full((len(df_features),), null_class_idx, dtype=torch.long)
 
@@ -219,7 +279,7 @@ def route_task_data(df: pd.DataFrame, target_col: str, task: str, null_class_idx
 # =========================================================
 # 目标类分布统计（对应原 MedSynth._compute_target_dist）
 # =========================================================
-def compute_target_dist(df: pd.DataFrame, target_col: str, target_class: int = 1) -> dict:
+def compute_target_dist(df: pd.DataFrame, target_col: str, target_class) -> dict:
     counts = df[target_col].value_counts()
     total = len(df)
     target_count = int(counts.get(target_class, 0))

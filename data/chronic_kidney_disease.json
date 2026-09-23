@@ -7,6 +7,6 @@
     "cat_col_idx": [3,4,5,6,7,8,18,19,20,21,22,23], 
     "target_col_idx": [24], 
     "file_type": "csv",
-    "data_path": "data/chronic_kidney_disease.csv",
+    "data_path": "splits/chronic_kidney_disease.csv",
     "test_path": null
 }

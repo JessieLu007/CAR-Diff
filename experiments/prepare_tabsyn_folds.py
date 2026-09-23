@@ -14,9 +14,21 @@
     python main.py --dataname ckd_fold0 --method tabsyn --mode train
     python main.py --dataname ckd_fold0 --method tabsyn --mode sample --save_path synthetic/ckd_fold0/tabsyn.csv
 """
-import os, json, shutil, argparse
+import os, sys, json, shutil, argparse
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from utils import common
+from utils.common import resolve_dataset
 
 # ============================ 常改的参数 ============================
+DEFAULT_DATASET = common.DATASETS[0]
+DEFAULT_SEED = 2026
+DEFAULT_N_FOLDS = 5
+
 TABSYN_ROOT = "E:/projects/tabsyn-main"           # 改成本地 tabsyn 仓库路径
 DDPM_MED_SPLIT_DIR = "splits"             # 对应 ddpm_med 里 run_experiment 的 split_dir
 TASK = "full_data"                        # 对应 exp_cfg.training.task
@@ -30,8 +42,8 @@ def prepare_fold(dataset_name, fold_idx, seed, num_col_idx, cat_col_idx, target_
     fold_name = f"{dataset_name}_fold{fold_idx}"
 
     # ---- 源文件：run_experiment 里 get_or_build_imputed_reference_cv 落盘的那份缓存 ----
-    src_dir = os.path.join(
-        DDPM_MED_SPLIT_DIR, f"{dataset_name}_seed{seed}_{TASK}_fold{fold_idx}_imputed"
+    src_dir = os.path.join(_ROOT, DDPM_MED_SPLIT_DIR, 
+        f"{dataset_name}_seed{seed}_{TASK}_fold{fold_idx}_imputed"
     )
     train_src = os.path.join(src_dir, "real_train_imputed.csv")
     test_src = os.path.join(src_dir, "real_test_imputed.csv")
@@ -71,19 +83,48 @@ def prepare_fold(dataset_name, fold_idx, seed, num_col_idx, cat_col_idx, target_
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", required=True)
-    parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--n_folds", type=int, default=5)
+    parser.add_argument("--dataset", default=str(DEFAULT_DATASET), help=f"数据集名称或索引（如 ckd / 0）；默认 {DEFAULT_DATASET}",)
+    parser.add_argument("--all", action="store_true", help="遍历 common.DATASETS 里的数据集")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help=f"随机种子；默认 {DEFAULT_SEED}")
+    parser.add_argument("--n_folds", type=int, default=DEFAULT_N_FOLDS, help=f"折数；默认 {DEFAULT_N_FOLDS}")
     args = parser.parse_args()
 
-    with open(DATASETS_IDX_PATH, "r", encoding="utf-8") as f:
-        idx_info = json.load(f)[args.dataset]
-    num_col_idx = idx_info["num_col_idx"]
-    cat_col_idx = idx_info["cat_col_idx"]
-    target_col_idx = idx_info["target_col_idx"]  # datasets_idx.json 里本来就有这个字段
+    if args.all:
+        dataset_names = list(common.DATASETS)
+        print(f"▶ 遍历全部 {len(dataset_names)} 个数据集: {dataset_names}")
+    else:
+        token = args.dataset if args.dataset is not None else str(DEFAULT_DATASET)
+        dataset_names = [resolve_dataset(token)]
 
-    for fold_idx in range(args.n_folds):
-        prepare_fold(args.dataset, fold_idx, args.seed, num_col_idx, cat_col_idx, target_col_idx)
+    #dataset_name = resolve_dataset(args.dataset)
+    #print(f"▶ dataset = {dataset_name}  seed = {args.seed}  n_folds = {args.n_folds}")
+
+    with open(os.path.join(_ROOT, DATASETS_IDX_PATH), "r", encoding="utf-8") as f:
+        all_idx = json.load(f)
+        #idx_info = json.load(f)[dataset_name]
+    
+    failed = []
+
+    for dataset_name in dataset_names:
+        if dataset_name not in all_idx:
+            print(f"⚠ 跳过 {dataset_name}: {DATASETS_IDX_PATH} 里没有该条目")
+            failed.append(dataset_name)
+            continue
+
+        print(f"\n========== {dataset_name} | seed={args.seed} | n_folds={args.n_folds} ==========")
+        idx_info       = all_idx[dataset_name]
+        num_col_idx    = idx_info["num_col_idx"]
+        cat_col_idx    = idx_info["cat_col_idx"]
+        target_col_idx = idx_info["target_col_idx"]
+
+        for fold_idx in range(args.n_folds):
+            prepare_fold(dataset_name, fold_idx, args.seed, 
+                         num_col_idx, cat_col_idx, target_col_idx)
+
+    if failed:
+        print(f"\n⚠ 有 {len(failed)} 个数据集没跑成: {failed}")
+    else:
+        print("\n✅ 全部完成")
 
 
 if __name__ == "__main__":

@@ -8,12 +8,23 @@
 改超参数只需要改下面【常改】那一块，改完直接跑，不用传一堆命令行参数。
 --dataset / --fold 是留给"批量跑几个数据集/几折"这种脚本化场景的，平时手动跑可以不传。
 """
-import sys
+import os, sys, platform
 sys.path.append("..")
+
+_IS_WINDOWS = sys.platform.startswith("win")
+_IS_LINUX   = sys.platform.startswith("linux")
+_IS_MAC     = sys.platform.startswith("darwin")
+
+# Windows 上 Inductor 有路径转义 bug，默认禁用 compile
+if _IS_WINDOWS:
+    os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+    print("🖥️  Windows 检测到，已禁用 torch.compile（规避 Inductor 路径 bug）")
+else:
+    print(f"🖥️  {platform.system()} 检测到，torch.compile 保持启用")
+
 from experiments.environment import *
 init_environment()
 
-import os
 os.environ['PYTHONIOENCODING'] = 'gbk:replace'
 
 import gc, json, random, argparse
@@ -99,17 +110,27 @@ def load_data(dataset_name: str):
     with open("data/dataset_info.json", "r", encoding="utf-8") as f:
         dataset_info = json.load(f)
 
-    df_all = pd.read_csv(f"./data/{dataset_name}.csv")
+    #df_all = pd.read_csv(f"./data/{dataset_name}.csv")
+
+    df_all = pd.read_csv(f"./data/{dataset_name}.csv", na_values=["?", "", " ", "NA", "nan", "None"],
+                         keep_default_na=True)
+    # 做额外空格处理，防止后续操作出错
+    df_all = df_all.apply(
+        lambda s: s.str.replace(r'^[\s\u00A0\u3000]+|[\s\u00A0\u3000]+$', '', regex=True) 
+        if s.dtype == object else s
+    )
+
     target_col = dataset_info[dataset_name]["target"]
+    minority_class = dataset_info[dataset_name].get("minority_class")
     if target_col not in df_all.columns:
         df_all[target_col] = 1
 
     idx_info = load_dataset_idx("data/datasets_idx.json", dataset_name)
-    return df_all, target_col, idx_info["num_col_idx"], idx_info["cat_col_idx"]
+    return df_all, target_col, idx_info["num_col_idx"], idx_info["cat_col_idx"], minority_class
 
 
-def run_one_fold(dataset_name, fold_idx, df_all, target_col, num_col_idx, cat_col_idx, exp_cfg):
-    set_seed(42)  # 每折训练前都校正一次，保证折与折之间只有数据不同，其余可复现
+def run_one_fold(dataset_name, fold_idx, df_all, target_col, num_col_idx, cat_col_idx, exp_cfg, minority_class, seed):
+    set_seed(seed)  # 每折训练前都校正一次，保证折与折之间只有数据不同，其余可复现
     print(f"\n========== {dataset_name} | fold {fold_idx + 1}/{N_FOLDS} ==========")
     results = run_experiment(
         df_all=df_all,
@@ -121,6 +142,7 @@ def run_one_fold(dataset_name, fold_idx, df_all, target_col, num_col_idx, cat_co
         exp_cfg=exp_cfg,
         fold_idx=fold_idx,
         n_folds=N_FOLDS,
+        target_minority_class=minority_class,
         only_splits=True,
     )
     gc.collect()
@@ -129,20 +151,40 @@ def run_one_fold(dataset_name, fold_idx, df_all, target_col, num_col_idx, cat_co
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", default=DATASET_NAME, help="不传则用上面 DATASET_NAME")
+    parser.add_argument("--dataset", default=str(DATASET_NAME), help="数据集名称或索引，不传则用上面 DATASET_NAME")
     parser.add_argument("--fold", type=int, default=None, help="只跑指定一折(0-based)；不传则跑全部 N_FOLDS 折")
+    parser.add_argument("--seed", type=int, default=42, help="设置环境变量随机种子")
+    parser.add_argument("--all", action="store_true", 
+                        help="依次跑 common.DATASETS 中所有数据集的 N_FOLDS 折划分；传了此参数时 --dataset 被忽略")
     args = parser.parse_args()
 
-    set_seed(42)
-    df_all, target_col, num_col_idx, cat_col_idx = load_data(args.dataset)
-    exp_cfg = build_config()
+    dataset_name = common.resolve_dataset(args.dataset)
+    print(f"▶ dataset = {dataset_name} (来自 --dataset {args.dataset})")
 
-    folds = [args.fold] if args.fold is not None else range(N_FOLDS)
-    all_results = []
-    for fold_idx in folds:
-        all_results.append(
-            run_one_fold(args.dataset, fold_idx, df_all, target_col, num_col_idx, cat_col_idx, exp_cfg)
-        )
+    set_seed(args.seed)
+
+    if args.all:
+        dataset_names = list(common.DATASETS)
+        print(f"▶ --all 模式，共 {len(dataset_names)} 个数据集: {dataset_names}")
+    else:
+        dataset_names = [common.resolve_dataset(args.dataset)]
+        print(f"▶ dataset = {dataset_names[0]} (来自 --dataset {args.dataset})")
+
+    all_results = {}
+
+    for dataset_name in dataset_names:
+        df_all, target_col, num_col_idx, cat_col_idx, minority_class = load_data(dataset_name)
+        exp_cfg = build_config()
+
+        folds = [args.fold] if args.fold is not None else range(N_FOLDS)
+        dataset_results = []
+        for fold_idx in folds:
+            dataset_results.append(
+                run_one_fold(dataset_name, fold_idx, df_all, target_col, num_col_idx, 
+                         cat_col_idx, exp_cfg, minority_class, args.seed)
+            )
+        all_results[dataset_name] = dataset_results
+        
     return all_results
 
 

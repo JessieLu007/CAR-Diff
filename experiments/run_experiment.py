@@ -1,16 +1,17 @@
 # 文件位置: experiments/run_experiment.py
 from dataclasses import asdict
 import json
+import numpy as np
 import torch
 import os, sys, gc, time, pickle
 import pandas as pd
 from datetime import datetime
 from contextlib import redirect_stdout
 
-
+from core.target_mapper import TargetMapper
 from configs.experiment_configs import ExperimentConfig
 from experiments.data_prep import (
-    route_task_data, compute_target_dist, build_processor, 
+    decode_target, encode_target, resolve_minority_class, route_task_data, compute_target_dist, build_processor, 
     make_kfold_splits, get_fold, get_or_build_imputed_reference_cv
 )
 from experiments.model_runner import build_dataloader, build_meta_info, train_model, generate_samples, save_run
@@ -34,7 +35,8 @@ def run_experiment(
     exp_cfg: ExperimentConfig,
     fold_idx: int,
     n_folds: int = 5,
-    target_minority_class: int = 1,
+    target_minority_class=None, #默认None，自动推断
+    target_class_order: list | None=None, # optional: 显示类序，跨fold保持一致
     split_dir: str = "splits",
     evaluator_fn=None,   # 预留：(df_train_imputed, df_test_imputed, df_fake) -> dict
     only_splits=True,
@@ -58,6 +60,32 @@ def run_experiment(
         with redirect_stdout(Tee(sys.stdout, log_f)):
             print("=" * 60); print(f"🚀 开始实验  📁 {save_path}"); print("=" * 60)
 
+            target_mapper = TargetMapper(class_order=target_class_order).fit(df_all[target_col])
+            print(f"🏷️ target 类别 {target_mapper.num_classes_} 个: {target_mapper.class_order_}")
+
+            # null_class_idx 必须严格大于所有真实类别编码，按当前数据集类别数动态算
+            from dataclasses import replace as dc_replace
+            exp_cfg = dc_replace(exp_cfg, model=dc_replace(exp_cfg.model, null_class_idx=target_mapper.num_classes_))
+
+            minority_class_raw = resolve_minority_class(
+                df_all, target_col, target_minority_class,
+            )
+            print(f"🎯 少数类 raw={minority_class_raw!r}")
+
+            # 只有 minority_cond / minority_uncond 才需要把 target 整数化；
+            # full_data 保留原始 target（走 processor 的 cat 通道）
+            #df_all_enc = df_all.copy()
+            if task in ("minority_cond", "minority_uncond"):
+                #df_all_enc[target_col] = target_mapper.transform(df_all[target_col])
+                minority_class = target_mapper.mapping_[minority_class_raw]
+            else:
+                minority_class = minority_class_raw
+            print(f"🎯 少数类 encoded={minority_class!r}")
+
+            # 落盘映射表（供复核 / 反变换 / 跨 run 对齐）
+            with open(os.path.join(save_path, "target_mapping.json"), "w", encoding="utf-8") as f:
+                json.dump(target_mapper.to_dict(), f, indent=4, ensure_ascii=False)
+
             # ---------------- 数据划分 (五折， 不含验证集）----------------
             folds_idx = make_kfold_splits(
                 dataset_name, df_all, target_col, n_folds=n_folds,
@@ -66,16 +94,20 @@ def run_experiment(
             df_train, df_test = get_fold(df_all, folds_idx, fold_idx)
             print(f"📊 第{fold_idx+1}/{n_folds}折: train={len(df_train)} test={len(df_test)}")
 
+            if task in ("minority_cond", "minority_uncond"):
+                df_train[target_col] = target_mapper.transform(df_train[target_col])
+                df_test[target_col] = target_mapper.transform(df_test[target_col])
+
             if task in ("minority_uncond", "minority_cond"):
-                df_train_ref = df_train[df_train[target_col] == 1].copy()
+                df_train_ref = df_train[df_train[target_col] == minority_class].copy()
             else:
                 df_train_ref = df_train
 
-            target_dist = compute_target_dist(df_train, target_col, target_minority_class)
+            target_dist = compute_target_dist(df_train, target_col, minority_class) # target_minority_class
 
             # ---------------- task 路由 ----------------
             null_idx = exp_cfg.model.null_class_idx
-            df_model_train, y_train = route_task_data(df_train_ref, target_col, task, null_idx)
+            df_model_train, y_train = route_task_data(df_train_ref, target_col, task, null_idx, minority_class)
 
             # ---------------- 预处理器（只在本折训练集上 fit，val/test 里没见过的类别由 ordinal encoder 的
             #                   unknown-value 机制兜底，不会报错，也不会泄露） ----------------
@@ -97,7 +129,7 @@ def run_experiment(
 
             # ---------------- 划分信息（供后续复核/对比使用；real_train/test 的实际数据在 imputed_cache_dir 下） ----------------            
             split_info = {
-                "n_folds": n_folds, "fold_idx": fold_idx, 
+                "n_folds": n_folds, "fold_idx": fold_idx,
                 "random_seed": exp_cfg.pipeline.random_seed,
                 "n_train": len(df_train), "n_test": len(df_test),
                 "imputed_cache_dir": imputed_cache_dir,
@@ -112,7 +144,9 @@ def run_experiment(
             #                   过拟合缓解交给 weight decay / dropout 等训练期正则化） ----------------
             train_loader = build_dataloader(processor, df_model_train, y_train, 
                                             exp_cfg.training.batch_size, shuffle=True, 
-                                            device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+                                            device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+                                            last_batch_strategy=getattr(exp_cfg.training, "last_batch_strategy", "drop"))
+            #num_cond_classes = target_mapper.num_classes_ if task == "minority_cond" else None
             meta_info = build_meta_info(processor, df_model_train)
 
             # ---------------- 训练 ----------------
@@ -139,9 +173,13 @@ def run_experiment(
             t0 = time.time()
             df_fake = generate_samples(
                 diffusion, processor, exp_cfg.sampling, task,
-                target_minority_class, target_dist, target_col, original_columns,
-            )
+                minority_class, target_dist, target_col, original_columns,
+            )        
             print(f"✅ 生成完成 | {time.time()-t0:.2f} sec")
+
+            # ★ target 是标签时，把它还原成原始类名（字符串/数字类名都能还原）
+            if task in ("minority_cond", "minority_uncond") and target_col in df_fake.columns:
+                df_fake[target_col] = target_mapper.inverse_transform(df_fake[target_col].values)
 
             # ---------------- 落盘：生成数据（真实/插补数据已经在训练开始前存过了） ----------------
             df_fake.to_csv(os.path.join(save_path, "synthetic_data.csv"), index=False)

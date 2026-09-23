@@ -18,36 +18,54 @@ from configs.experiment_configs import ExperimentConfig
 
 class InMemoryTensorLoader:
     """替代 DataLoader：数据整份常驻显存，直接张量索引取 batch。
-    drop_last=True 固定：配合 torch.compile(mode="reduce-overhead") 的
-    CUDA Graph 模式，每个 batch 形状必须一致，因此丢弃不满 batch_size 的尾巴。
+    last_batch_strategy 控制"凑不满一个 batch 的尾巴"怎么处理：
+        "drop" —— 直接丢弃（默认，原来的行为）
+        "pad"  —— 从整份数据里随机重复采样补满到 batch_size，不丢数据，
+                   代价是这一个 batch 里会有部分样本重复
     """
-    def __init__(self, x: torch.Tensor, y: torch.Tensor, batch_size: int, device, shuffle: bool = True):
-        if batch_size > x.shape[0]:
-            print(f"⚠️  batch_size({batch_size}) > 样本数({x.shape[0]})，drop_last 会导致每个 epoch 没有可用 batch")
+    def __init__(self, x: torch.Tensor, y: torch.Tensor, batch_size: int, 
+                 device, shuffle: bool = True, last_batch_strategy: str = "drop"):
+        assert last_batch_strategy in ("drop", "pad"), \
+            f"last_batch_strategy 只能是 'drop' 或 'pad'，收到: {last_batch_strategy!r}"
+        if batch_size > x.shape[0] and last_batch_strategy == "drop":
+            print(f"⚠️  batch_size({batch_size}) > 样本数({x.shape[0]})，drop 策略下每个 epoch 没有可用 batch，建议改用 'pad'")
         self.x = x.to(device)
         self.y = y.to(device)
         self.batch_size = batch_size
         self.shuffle = shuffle
+        self.last_batch_strategy = last_batch_strategy
         self.dataset = self.x
 
     def __iter__(self):
         n = self.x.shape[0]
         order = torch.randperm(n, device=self.x.device) if self.shuffle else torch.arange(n, device=self.x.device)
         usable_n = (n // self.batch_size) * self.batch_size
+
         for start in range(0, usable_n, self.batch_size):
             idx = order[start:start + self.batch_size]
             yield self.x[idx], self.y[idx]
 
+        remainder = n - usable_n
+        if remainder > 0 and self.last_batch_strategy == "pad":
+            tail_idx = order[usable_n:]
+            pad_idx = torch.randint(0, n, (self.batch_size - remainder,), device=self.x.device)
+            idx = torch.cat([tail_idx, pad_idx])
+            yield self.x[idx], self.y[idx]
+
     def __len__(self):
-        return self.x.shape[0] // self.batch_size
+        n = self.x.shape[0]
+        full_batches = n // self.batch_size
+        if self.last_batch_strategy == "pad" and n % self.batch_size > 0:
+            return full_batches + 1
+        return full_batches
 
-
-def build_dataloader(processor, df_features: pd.DataFrame, y: torch.Tensor,
-                     batch_size: int, shuffle: bool, device) -> InMemoryTensorLoader:
+def build_dataloader(processor, df_features: pd.DataFrame, y: torch.Tensor,batch_size: int, 
+                     shuffle: bool, device, last_batch_strategy: str = "drop") -> InMemoryTensorLoader:
     x_encoded = processor.transform(df_features)
     ordered_cols = processor.num_cols + processor.cat_cols
     x_tensor = torch.tensor(x_encoded[ordered_cols].values, dtype=torch.float32)
-    return InMemoryTensorLoader(x_tensor, y, batch_size=batch_size, device=device, shuffle=shuffle)
+    return InMemoryTensorLoader(x_tensor, y, batch_size=batch_size, device=device, 
+                                shuffle=shuffle, last_batch_strategy=last_batch_strategy)
 
 
 def build_meta_info(processor, df_features: pd.DataFrame) -> dict:

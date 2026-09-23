@@ -171,7 +171,7 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         assert sampling_cfg.num_samples is not None, "SamplingConfig.num_samples 未设置"
 
         # full_data 模式下模型无视外部条件，一律使用 null
-        if self.train_cfg.task == "full_data":
+        if self.train_cfg.task in ("full_data", "minority_uncond"):
             y_for_sampling = self.model_cfg.null_class_idx
         else:
             y_for_sampling = y_cond if y_cond is not None else self.model_cfg.null_class_idx
