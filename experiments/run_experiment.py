@@ -87,12 +87,24 @@ def run_experiment(
                 json.dump(target_mapper.to_dict(), f, indent=4, ensure_ascii=False)
 
             # ---------------- 数据划分 (五折， 不含验证集）----------------
-            folds_idx = make_kfold_splits(
-                dataset_name, df_all, target_col, n_folds=n_folds,
-                random_seed=exp_cfg.pipeline.random_seed, split_dir=split_dir,
+            # folds_idx = make_kfold_splits(
+            #     dataset_name, df_all, target_col, n_folds=n_folds,
+            #     random_seed=exp_cfg.pipeline.random_seed, split_dir=split_dir,
+            # )
+            # df_train, df_test = get_fold(df_all, folds_idx, fold_idx)
+            # print(f"📊 第{fold_idx+1}/{n_folds}折: train={len(df_train)} test={len(df_test)}")
+
+            folds_idx, df_all = make_kfold_splits(
+            dataset_name,
+            df_all,
+            target_col,
+            cat_col_idx=cat_col_idx,
+            n_folds=n_folds,
+            random_seed=exp_cfg.pipeline.random_seed,
+            split_dir=split_dir,
             )
-            df_train, df_test = get_fold(df_all, folds_idx, fold_idx)
-            print(f"📊 第{fold_idx+1}/{n_folds}折: train={len(df_train)} test={len(df_test)}")
+
+            df_train, df_test = get_fold(df_all, folds_idx, fold_idx,)
 
             if task in ("minority_cond", "minority_uncond"):
                 df_train[target_col] = target_mapper.transform(df_train[target_col])

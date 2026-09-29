@@ -165,7 +165,7 @@ def resolve_minority_class(
 # =========================================================
 # 5折交叉验证划分（不含验证集）—— 新增，和 split_dataset 是并列的两条路，互不影响
 # =========================================================
-def make_kfold_splits(
+def make_kfold_splits_old(
     dataset_name: str,
     df_all: pd.DataFrame,
     target_col: str,
@@ -209,6 +209,644 @@ def make_kfold_splits(
         json.dump(folds_idx, f)
 
     return folds_idx
+
+
+# =========================================================
+# 5折交叉验证划分（不含验证集）
+# =========================================================
+
+def _build_kfold_candidate(
+    df_all: pd.DataFrame,
+    target_col: str,
+    n_folds: int,
+    random_seed: int,
+) -> list:
+    """按指定 seed 生成一份普通 K-fold / StratifiedKFold 划分。"""
+    unique_classes = df_all[target_col].nunique()
+
+    if unique_classes > 1:
+        splitter = StratifiedKFold(
+            n_splits=n_folds,
+            shuffle=True,
+            random_state=random_seed,
+        )
+        split_iter = splitter.split(
+            df_all,
+            df_all[target_col],
+        )
+    else:
+        splitter = KFold(
+            n_splits=n_folds,
+            shuffle=True,
+            random_state=random_seed,
+        )
+        split_iter = splitter.split(df_all)
+
+    return [
+        {
+            "train_idx": train_idx.tolist(),
+            "test_idx": test_idx.tolist(),
+        }
+        for train_idx, test_idx in split_iter
+    ]
+
+
+def _collect_test_only_categories(
+    df_all: pd.DataFrame,
+    folds_idx: list,
+    cat_col_idx: list[int],
+) -> dict:
+    """
+    收集所有在至少一个 fold 中只出现在 test、未出现在对应 train
+    的 categorical level。
+
+    返回：
+        {
+            column_name: {problematic_value1, problematic_value2, ...}
+        }
+    """
+    problems = {}
+
+    cat_cols = [
+        df_all.columns[i]
+        for i in cat_col_idx
+        if 0 <= i < len(df_all.columns)
+    ]
+
+    for fold in folds_idx:
+        train_idx = fold["train_idx"]
+        test_idx = fold["test_idx"]
+
+        for col in cat_cols:
+            train_values = set(
+                df_all.loc[train_idx, col]
+                .dropna()
+                .unique()
+            )
+            test_values = set(
+                df_all.loc[test_idx, col]
+                .dropna()
+                .unique()
+            )
+
+            unseen = test_values - train_values
+
+            if unseen:
+                problems.setdefault(col, set()).update(unseen)
+
+    return problems
+
+
+def _check_categorical_coverage(
+    df_all: pd.DataFrame,
+    folds_idx: list,
+    cat_col_idx: list[int],
+) -> tuple[bool, str]:
+    """
+    检查每个 fold 的 test categorical levels 是否全部出现在对应 train 中。
+    """
+    problems = _collect_test_only_categories(
+        df_all,
+        folds_idx,
+        cat_col_idx,
+    )
+
+    if not problems:
+        return True, ""
+
+    # 只返回第一个问题，便于日志阅读
+    col = next(iter(problems))
+    values = sorted(problems[col], key=str)
+
+    # 找出具体是哪个 fold 触发了问题
+    for fold_idx, fold in enumerate(folds_idx):
+        train_values = set(
+            df_all.loc[fold["train_idx"], col]
+            .dropna()
+            .unique()
+        )
+        test_values = set(
+            df_all.loc[fold["test_idx"], col]
+            .dropna()
+            .unique()
+        )
+        unseen = test_values - train_values
+
+        if unseen:
+            return False, (
+                f"fold={fold_idx}, column={col!r}, "
+                f"test-only categories={sorted(unseen, key=str)}"
+            )
+
+    return False, (
+        f"column={col!r}, "
+        f"test-only categories={values}"
+    )
+
+
+def _json_safe_value(value):
+    """把 numpy scalar 等转换成可直接 json 序列化的 Python scalar。"""
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return value
+
+
+def _apply_category_changes(
+    df_all: pd.DataFrame,
+    category_changes: dict,
+) -> pd.DataFrame:
+    """
+    根据缓存中的 category_changes 重放 fallback。
+    """
+    df_processed = df_all.copy()
+
+    for col, changes in category_changes.items():
+        if col not in df_processed.columns:
+            raise ValueError(
+                f"缓存中的 categorical column {col!r} "
+                f"不在当前数据中。"
+            )
+
+        for change in changes:
+            source = change["from"]
+            target = change["to"]
+
+            df_processed.loc[
+                df_processed[col] == source,
+                col
+            ] = target
+
+    return df_processed
+
+
+def _collapse_singleton_categories(
+    df_all: pd.DataFrame,
+    cat_col_idx: list[int],
+) -> tuple[pd.DataFrame, dict]:
+    """
+    第一层 fallback：
+
+    对整个数据集只出现 1 次的 categorical level，
+    合并到该列最常见的非 singleton level。
+
+    只处理 singleton，不改变其他类别。
+    """
+    df_processed = df_all.copy()
+    category_changes = {}
+
+    for col_idx in cat_col_idx:
+        if not (0 <= col_idx < len(df_processed.columns)):
+            continue
+
+        col = df_processed.columns[col_idx]
+
+        counts = df_processed[col].value_counts(dropna=True)
+
+        singleton_values = (
+            counts[counts == 1]
+            .index
+            .tolist()
+        )
+
+        if not singleton_values:
+            continue
+
+        candidate_counts = counts[
+            ~counts.index.isin(singleton_values)
+        ]
+
+        if candidate_counts.empty:
+            raise RuntimeError(
+                f"categorical column {col!r} 的所有非缺失 "
+                f"level 都只出现 1 次，无法进行 singleton fallback。"
+            )
+
+        fallback_value = candidate_counts.idxmax()
+
+        col_changes = []
+
+        for value in singleton_values:
+            if value == fallback_value:
+                continue
+
+            df_processed.loc[
+                df_processed[col] == value,
+                col
+            ] = fallback_value
+
+            col_changes.append({
+                "from": _json_safe_value(value),
+                "to": _json_safe_value(fallback_value),
+            })
+
+        category_changes[col] = col_changes
+
+        print(
+            f"⚠️ categorical column {col!r}: "
+            f"merged {len(col_changes)} singleton levels "
+            f"into most frequent level {fallback_value!r}"
+        )
+
+    return df_processed, category_changes
+
+
+def _pool_test_only_categories(
+    df_all: pd.DataFrame,
+    folds_idx: list,
+    cat_col_idx: list[int],
+) -> tuple[pd.DataFrame, dict]:
+    """
+    第二层 fallback：
+
+    对当前 candidate split 中实际出现 test-only 的 categorical levels，
+    只把这些有问题的 level 合并到该列一个不会造成 coverage 问题的 level。
+
+    这里不重新划分 fold，因此：
+    - train/test 样本数不变
+    - fold 索引不变
+    - target 的分层关系不变
+    - 只改变确实造成 encoder vocabulary 不一致的类别
+    """
+    df_processed = df_all.copy()
+
+    problems = _collect_test_only_categories(
+        df_processed,
+        folds_idx,
+        cat_col_idx,
+    )
+
+    if not problems:
+        return df_processed, {}
+
+    category_changes = {}
+
+    for col, problematic_values in problems.items():
+        counts = df_processed[col].value_counts(dropna=True)
+
+        # 优先选择一个本身没有出现 test-only 问题的 level
+        candidate_counts = counts[
+            ~counts.index.isin(problematic_values)
+        ]
+
+        if not candidate_counts.empty:
+            fallback_value = candidate_counts.idxmax()
+        else:
+            # 极端情况：该列所有非缺失 level 都在某个 fold 中成为 test-only。
+            # 此时直接保留该列全局最常见 level，其他 level 全部并入。
+            fallback_value = counts.idxmax()
+
+        col_changes = []
+
+        for value in problematic_values:
+            if value == fallback_value:
+                continue
+
+            df_processed.loc[
+                df_processed[col] == value,
+                col
+            ] = fallback_value
+
+            col_changes.append({
+                "from": _json_safe_value(value),
+                "to": _json_safe_value(fallback_value),
+            })
+
+        if col_changes:
+            category_changes[col] = col_changes
+
+            print(
+                f"⚠️ categorical column {col!r}: "
+                f"merged {len(col_changes)} test-only levels "
+                f"into {fallback_value!r}"
+            )
+
+    return df_processed, category_changes
+
+
+def _save_kfold_cache(
+    split_path: str,
+    folds_idx: list,
+    n_folds: int,
+    random_seed: int,
+    category_changes: dict | None = None,
+):
+    """保存新版 split cache。"""
+    payload = {
+        "version": 2,
+        "n_folds": n_folds,
+        "random_seed": random_seed,
+        "fallback_applied": bool(category_changes),
+        "category_changes": category_changes or {},
+        "folds": folds_idx,
+    }
+
+    os.makedirs(
+        os.path.dirname(split_path) or ".",
+        exist_ok=True,
+    )
+
+    with open(split_path, "w", encoding="utf-8") as f:
+        json.dump(
+            payload,
+            f,
+            indent=4,
+            ensure_ascii=False,
+        )
+
+
+def make_kfold_splits(
+    dataset_name: str,
+    df_all: pd.DataFrame,
+    target_col: str,
+    cat_col_idx: list[int],
+    n_folds: int = 5,
+    random_seed: int = 0,
+    split_dir: str = "splits",
+    max_attempts: int = 100,
+) -> tuple[list, pd.DataFrame]:
+    """
+    生成/复用 n_folds 折 train/test。
+
+    处理顺序：
+
+    1. 原始数据上尝试多个随机 seed，优先完整保留原始 categorical levels。
+    2. 若始终存在 coverage 问题，只处理 singleton categorical levels，
+       然后再次尝试多个随机 seed。
+    3. 如果仍存在 test-only category，则针对最终 candidate split，
+       只合并实际造成 vocabulary 不一致的类别。
+       不改变 fold 索引，只改变有问题的 categorical value。
+    4. 保存最终 folds + category fallback 信息，后续直接复用。
+
+    返回：
+        folds_idx, 实际用于该 split 的 df_all
+    """
+    split_path = os.path.join(
+        split_dir,
+        f"{dataset_name}_seed{random_seed}_{n_folds}fold.json"
+    )
+
+    # =====================================================
+    # 0. 读取已有 cache
+    # =====================================================
+    if os.path.exists(split_path):
+        with open(split_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+
+        if isinstance(cached, dict) and "folds" in cached:
+            folds_idx = cached["folds"]
+
+            if len(folds_idx) != n_folds:
+                raise ValueError(
+                    f"{split_path} 已存在，但折数 "
+                    f"({len(folds_idx)}) 和本次请求 "
+                    f"({n_folds}) 不一致。"
+                )
+
+            category_changes = cached.get(
+                "category_changes",
+                {}
+            )
+
+            df_cached = (
+                _apply_category_changes(
+                    df_all,
+                    category_changes,
+                )
+                if category_changes
+                else df_all.copy()
+            )
+
+            valid, error = _check_categorical_coverage(
+                df_cached,
+                folds_idx,
+                cat_col_idx,
+            )
+
+            if valid:
+                print(
+                    f"✅ 复用已有 5-fold split: "
+                    f"{split_path}"
+                )
+                if category_changes:
+                    print(
+                        "   已重放 categorical fallback。"
+                    )
+                return folds_idx, df_cached
+
+            print(
+                f"⚠️ 已有 split cache 的 categorical "
+                f"coverage 无效，将重新生成。原因：{error}"
+            )
+
+        elif isinstance(cached, list):
+            # 兼容你回退前已经生成的旧版 list-format cache
+            folds_idx = cached
+
+            if len(folds_idx) != n_folds:
+                raise ValueError(
+                    f"{split_path} 已存在，但折数 "
+                    f"({len(folds_idx)}) 和本次请求 "
+                    f"({n_folds}) 不一致。"
+                )
+
+            valid, error = _check_categorical_coverage(
+                df_all,
+                folds_idx,
+                cat_col_idx,
+            )
+
+            if valid:
+                # 升级成新版 cache
+                _save_kfold_cache(
+                    split_path,
+                    folds_idx,
+                    n_folds,
+                    random_seed,
+                )
+                print(
+                    f"✅ 复用已有 split 并升级 cache: "
+                    f"{split_path}"
+                )
+                return folds_idx, df_all.copy()
+
+            print(
+                f"⚠️ 旧 split cache 存在 categorical coverage "
+                f"问题，将重新生成。原因：{error}"
+            )
+
+    # =====================================================
+    # 1. 第一阶段：原始数据，多次随机尝试
+    # =====================================================
+    last_folds = None
+    last_error = ""
+
+    for attempt in range(max_attempts):
+        candidate_folds = _build_kfold_candidate(
+            df_all,
+            target_col,
+            n_folds,
+            random_seed + attempt,
+        )
+
+        valid, error = _check_categorical_coverage(
+            df_all,
+            candidate_folds,
+            cat_col_idx,
+        )
+
+        if valid:
+            _save_kfold_cache(
+                split_path,
+                candidate_folds,
+                n_folds,
+                random_seed,
+            )
+            print(
+                f"✅ categorical coverage valid "
+                f"(original data, attempt {attempt + 1}/{max_attempts})"
+            )
+            return candidate_folds, df_all.copy()
+
+        last_folds = candidate_folds
+        last_error = error
+
+    print(
+        f"\n⚠️ 原始数据经过 {max_attempts} 次随机划分后，"
+        f"仍无法保证 categorical coverage。"
+    )
+    print(f"   最后一次失败：{last_error}")
+
+    # =====================================================
+    # 2. 第二阶段：只处理 singleton categories
+    # =====================================================
+    df_processed, singleton_changes = (
+        _collapse_singleton_categories(
+            df_all,
+            cat_col_idx,
+        )
+    )
+
+    # 没有 singleton 就不再浪费一轮完全相同的数据尝试
+    if singleton_changes:
+        last_folds = None
+        last_error = ""
+
+        for attempt in range(max_attempts):
+            candidate_folds = _build_kfold_candidate(
+                df_processed,
+                target_col,
+                n_folds,
+                random_seed + attempt,
+            )
+
+            valid, error = _check_categorical_coverage(
+                df_processed,
+                candidate_folds,
+                cat_col_idx,
+            )
+
+            if valid:
+                _save_kfold_cache(
+                    split_path,
+                    candidate_folds,
+                    n_folds,
+                    random_seed,
+                    singleton_changes,
+                )
+                print(
+                    f"✅ singleton fallback 后获得有效 split "
+                    f"(attempt {attempt + 1}/{max_attempts})"
+                )
+                return candidate_folds, df_processed
+
+            last_folds = candidate_folds
+            last_error = error
+
+        print(
+            f"⚠️ singleton fallback 后仍存在 "
+            f"categorical coverage 问题：{last_error}"
+        )
+
+    # =====================================================
+    # 3. 第三阶段：针对最后一个 candidate split，
+    #    合并实际 test-only categories
+    # =====================================================
+    if last_folds is None:
+        # 理论上不会进入；保险处理
+        last_folds = _build_kfold_candidate(
+            df_processed,
+            target_col,
+            n_folds,
+            random_seed,
+        )
+
+    targeted_changes_df, targeted_changes = (
+        _pool_test_only_categories(
+            df_processed,
+            last_folds,
+            cat_col_idx,
+        )
+    )
+
+    all_category_changes = {}
+
+    # 合并 singleton fallback 的修改记录
+    for col, changes in singleton_changes.items():
+        all_category_changes.setdefault(col, [])
+        all_category_changes[col].extend(changes)
+
+    # 再合并针对 test-only category 的修改记录
+    for col, changes in targeted_changes.items():
+        all_category_changes.setdefault(col, [])
+        all_category_changes[col].extend(changes)
+
+    valid, error = _check_categorical_coverage(
+        targeted_changes_df,
+        last_folds,
+        cat_col_idx,
+    )
+
+    if not valid:
+        raise RuntimeError(
+            "❌ categorical coverage fallback 后仍然无效。\n"
+            f"原因：{error}"
+        )
+
+    _save_kfold_cache(
+        split_path,
+        last_folds,
+        n_folds,
+        random_seed,
+        all_category_changes,
+    )
+
+    print(
+        "✅ targeted categorical fallback 后获得有效 split。"
+    )
+
+    return last_folds, targeted_changes_df
+
+
+def get_fold(
+    df_all: pd.DataFrame,
+    folds_idx: list,
+    fold_idx: int,
+):
+    """按 fold_idx 取出这一折 train/test DataFrame。"""
+    idx = folds_idx[fold_idx]
+
+    df_train = df_all.loc[
+        idx["train_idx"]
+    ].reset_index(drop=True)
+
+    df_test = df_all.loc[
+        idx["test_idx"]
+    ].reset_index(drop=True)
+
+    return df_train, df_test
 
 
 def get_fold(df_all: pd.DataFrame, folds_idx: list, fold_idx: int):
