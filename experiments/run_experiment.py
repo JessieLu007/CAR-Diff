@@ -206,7 +206,7 @@ def run_experiment(
 
             # ---------------- 详细实验配置（含数据集信息） ----------------
             final_config = {
-                "dataset_info": {
+                "datasets_info": {
                     "name": dataset_name,
                     "total_rows": len(df_train) + len(df_test),
                     "target": target_col,

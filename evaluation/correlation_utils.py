@@ -1,3 +1,4 @@
+# evaluation/correlation_utils.py
 import shap
 import numpy as np
 import pandas as pd
@@ -52,7 +53,7 @@ def compute_shap_preservation(train: pd.DataFrame, syn: pd.DataFrame):
 
     clf_real = XGBClassifier(
         n_estimators=300,
-        max_depath=5,
+        max_depth=5,
         learning_rate=0.05,
         random_state=42
     )
@@ -60,7 +61,7 @@ def compute_shap_preservation(train: pd.DataFrame, syn: pd.DataFrame):
 
     clf_syn = XGBClassifier(
         n_estimators=300,
-        max_depath=5,
+        max_depth=5,
         learning_rate=0.05,
         random_state=42
     )
@@ -76,9 +77,6 @@ def compute_shap_preservation(train: pd.DataFrame, syn: pd.DataFrame):
     imp_syn  = np.abs(shap_syn).mean(axis=0)
 
     shap_corr = spearmanr(imp_real, imp_syn).correlation
-    #mae = np.mean(np.abs(imp_real - imp_syn))
     cos = cosine_similarity(imp_real.reshape(1, -1), imp_syn.reshape(1, -1))[0,0]
 
     return shap_corr, cos
-
-    

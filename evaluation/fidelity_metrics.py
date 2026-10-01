@@ -20,10 +20,9 @@ try:
 except ImportError:
     _HAS_LGB = False
 
-from evaluation.fidelity_config import EvalConfig
 from evaluation.fidelity_utils import (
     _encode_mixed, _gower_dist, _subset, _active_cols, _tvd_cont, _tvd_cat, _corr_diff, _encode_scale, 
-    _score_clf, _kendall_mat
+    _score_clf, _kendall_mat, EvalConfig
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -32,8 +31,7 @@ from evaluation.fidelity_utils import (
 # ══════════════════════════════════════════════════════════════════════════════
 
 def metric_tvd(
-    train_df: pd.DataFrame,
-    test_df:  pd.DataFrame,
+    real_df:  pd.DataFrame,
     fake_df:  pd.DataFrame,
     num_cols: list[str],
     cat_cols: list[str],
@@ -49,7 +47,7 @@ def metric_tvd(
     Interpretation : lower is better; 0 = identical distributions
     """
     mode = config.get_mode('tvd')
-    ref  = _subset(test_df, mode, config)
+    ref  = _subset(real_df, mode, config)
     fake = _subset(fake_df, mode, config)
     n_cols, c_cols = _active_cols(num_cols, cat_cols, mode, config)
 
@@ -68,8 +66,7 @@ def metric_tvd(
 
 
 def metric_corr_diff(
-    train_df: pd.DataFrame,
-    test_df:  pd.DataFrame,
+    real_df:  pd.DataFrame,
     fake_df:  pd.DataFrame,
     num_cols: list[str],
     cat_cols: list[str],
@@ -79,13 +76,13 @@ def metric_corr_diff(
     """
     Mixed-type correlation matrix difference.
 
-    Comparison : fake_df vs test_df
+    Comparison : fake_df vs real_df
     Mode       : controls full vs minority subset
     Outputs    : corr_diff_mean (avg absolute diff), corr_diff_fro (Frobenius norm)
     Interpretation : lower is better; captures pairwise dependency structure gaps
     """
     mode = config.get_mode('corr_diff')
-    ref  = _subset(test_df, mode, config)
+    ref  = _subset(real_df, mode, config)
     fake = _subset(fake_df, mode, config)
     n_cols, c_cols = _active_cols(num_cols, cat_cols, mode, config)
 
@@ -98,8 +95,7 @@ def metric_corr_diff(
 
 
 def metric_alpha_beta(
-    train_df:    pd.DataFrame,
-    test_df:     pd.DataFrame,
+    real_df:     pd.DataFrame,
     fake_df:     pd.DataFrame,
     num_cols:    list[str],
     cat_cols:    list[str],
@@ -116,7 +112,7 @@ def metric_alpha_beta(
     Interpretation : higher is better; both > 0.8 is a good target
     """
     mode = config.get_mode('alpha_beta')
-    ref  = _subset(test_df, mode, config)
+    ref  = _subset(real_df, mode, config)
     fake = _subset(fake_df, mode, config)
     n_cols, c_cols = _active_cols(num_cols, cat_cols, mode, config)
     all_feat = n_cols + c_cols
@@ -214,8 +210,7 @@ def metric_alpha_beta(
 
 
 def metric_c2st(
-    train_df:     pd.DataFrame,
-    test_df:      pd.DataFrame,
+    real_df:      pd.DataFrame,
     fake_df:      pd.DataFrame,
     num_cols:     list[str],
     cat_cols:     list[str],
@@ -235,7 +230,7 @@ def metric_c2st(
         return {'c2st_auc': float('nan')}
 
     mode = config.get_mode('c2st')
-    ref  = _subset(test_df, mode, config)
+    ref  = _subset(real_df, mode, config)
     fake = _subset(fake_df, mode, config)
     n_cols, c_cols = _active_cols(num_cols, cat_cols, mode, config)
     all_feat = n_cols + c_cols
@@ -277,16 +272,23 @@ def metric_c2st(
 
 
 def metric_dcr(
-    train_df:     pd.DataFrame,
-    test_df:      pd.DataFrame,
+    real_df:     pd.DataFrame,
     fake_df:      pd.DataFrame,
     num_cols:     list[str],
     cat_cols:     list[str],
     config:       EvalConfig,
+    train_df:   pd.DataFrame = None,
     max_samples:  int = 2000,
     random_state: int = 42,
     **kwargs,
 ) -> dict:
+
+    test_df = real_df
+
+    if train_df is None:
+        warnings.warn("dcr: train_df is required, skipping.")
+        return {k: float('nan') for k in
+                ('dcr_train_mean', 'dcr_test_mean', 'dcr_ks_stat', 'dcr_ks_pval')}
     
     mode  = config.get_mode('dcr')
     fake  = _subset(fake_df,  mode, config)
@@ -490,8 +492,8 @@ def metric_cls(
 
 
 def metric_tstr(
-    train_df:     pd.DataFrame,
-    test_df:      pd.DataFrame,
+    real_df:     pd.DataFrame,
+    train_df:      pd.DataFrame,
     fake_df:      pd.DataFrame,
     num_cols:     list[str],
     cat_cols:     list[str],
@@ -502,6 +504,9 @@ def metric_tstr(
     """
     TSTR evaluation with robust handling of unknown categories and label rounding.
     """
+
+    test_df = real_df
+
     _SFXS = ('acc', 'recall', 'f1', 'gmean', 'roc_auc', 'pr_auc')
     _nan  = {f'tstr_{p}_{s}': float('nan')
              for p in ('trtr', 'tstr', 'delta') for s in _SFXS}
@@ -626,140 +631,8 @@ def metric_tstr(
     return result
 
 
-def metric_tstr_old(
-    train_df:     pd.DataFrame,
-    test_df:      pd.DataFrame,
-    fake_df:      pd.DataFrame,
-    num_cols:     list[str],
-    cat_cols:     list[str],
-    config:       EvalConfig,
-    random_state: int = 42,
-    **kwargs,
-) -> dict:
-    """
-    Train on Synthetic, Test on Real (TSTR) — full-dataset utility evaluation.
-
-    TRTR : train on train_df (real),  score on test_df  [reference]
-    TSTR : train on fake_df (full synthetic set), score on same test_df
-    Δ    = TSTR − TRTR;  near 0 means synthetic generalises as well as real
-
-    Unlike metric_cls (minority-only augmentation), fake_df here is the
-    complete synthetic dataset and MUST contain minority_col.
-    mode / _subset() intentionally not applied — always full-distribution.
-
-    Requires
-    --------
-    config.minority_col  – classification target column
-    config.minority_val  – minority class value (binary pos_label)
-
-    Output keys
-    -----------
-    tstr_trtr_{acc,recall,f1,gmean,roc_auc,pr_auc}
-    tstr_tstr_{acc,recall,f1,gmean,roc_auc,pr_auc}
-    tstr_delta_{acc,recall,f1,gmean,roc_auc,pr_auc}
-    """
-    _SFXS = ('acc', 'recall', 'f1', 'gmean', 'roc_auc', 'pr_auc')
-    _nan  = {f'tstr_{p}_{s}': float('nan')
-             for p in ('trtr', 'tstr', 'delta') for s in _SFXS}
-
-    if not (_HAS_XGB or _HAS_LGB):
-        warnings.warn("tstr: xgboost/lightgbm not installed, skipping.")
-        return _nan
-    if config.minority_col is None:
-        warnings.warn("tstr: EvalConfig.minority_col must be set, skipping.")
-        return _nan
-
-    label_col = config.minority_col
-
-    if label_col not in fake_df.columns:
-        warnings.warn(
-            f"tstr: fake_df must contain '{label_col}'. "
-            f"TSTR requires the full synthetic dataset with labels. Skipping."
-        )
-        return _nan
-
-    cat_feats = [c for c in cat_cols if c != label_col]
-    num_feats = [c for c in num_cols if c != label_col]
-    feat_cols = num_feats + cat_feats
-
-    if not feat_cols:
-        warnings.warn("tstr: no feature columns after excluding label, skipping.")
-        return _nan
-
-    # ── Encoders fitted on train_df (real) as reference ──────────────────────
-    feat_encoders: dict[str, LabelEncoder] = {}
-    for col in cat_feats:
-        feat_encoders[col] = LabelEncoder().fit(train_df[col].astype(str))
-
-    le_label = LabelEncoder().fit(train_df[label_col].astype(str))
-    try:
-        minority_enc: Optional[int] = int(
-            le_label.transform([str(config.minority_val)])[0]
-        )
-    except Exception:
-        minority_enc = None
-
-    def _enc_X(df: pd.DataFrame) -> np.ndarray:
-        enc = df[feat_cols].copy().reset_index(drop=True)
-        for col in cat_feats:
-            le = feat_encoders[col]
-            enc[col] = df[col].astype(str).map(
-                lambda v, _le=le: int(_le.transform([v])[0])
-                if v in _le.classes_ else -1
-            )
-        return enc.values.astype(float)
-
-    def _enc_y(df: pd.DataFrame) -> np.ndarray:
-        y = df[label_col].copy()
-        if y.dtype.kind in 'if':          # 如果是浮点数或整数
-            y = y.round().astype(int).astype(str)   # 四舍五入取整后转字符串
-        else:
-            y = y.astype(str)
-        return le_label.transform(y)
-
-    def _enc_y(df: pd.DataFrame) -> np.ndarray:
-        return le_label.transform(df[label_col].astype(str))
-
-    X_real = _enc_X(train_df); y_real = _enc_y(train_df)
-    X_fake = _enc_X(fake_df);  y_fake = _enc_y(fake_df)
-    X_test = _enc_X(test_df);  y_test = _enc_y(test_df)
-
-    def _build() -> object:
-        return (
-            XGBClassifier(
-                n_estimators=300, max_depth=4, learning_rate=0.05,
-                subsample=0.8, colsample_bytree=0.8,
-                eval_metric='logloss', verbosity=0, random_state=random_state,
-            ) if _HAS_XGB else
-            LGBMClassifier(
-                n_estimators=300, max_depth=4, learning_rate=0.05,
-                subsample=0.8, colsample_bytree=0.8,
-                verbose=-1, random_state=random_state,
-            )
-        )
-
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        clf_trtr = _build(); clf_trtr.fit(X_real, y_real)
-        clf_tstr = _build(); clf_tstr.fit(X_fake, y_fake)
-
-    trtr_s = _score_clf(clf_trtr, X_test, y_test, pos_label=minority_enc)
-    tstr_s = _score_clf(clf_tstr, X_test, y_test, pos_label=minority_enc)
-
-    result: dict[str, float] = {}
-    for k in _SFXS:
-        rv, sv = trtr_s[k], tstr_s[k]
-        result[f'tstr_trtr_{k}'] = rv
-        result[f'tstr_tstr_{k}'] = sv
-        result[f'tstr_delta_{k}'] = (
-            sv - rv if not (np.isnan(rv) or np.isnan(sv)) else float('nan')
-        )
-    return result
-
-
 def metric_kendall(
-    train_df: pd.DataFrame,
-    test_df:  pd.DataFrame,
+    real_df:  pd.DataFrame,
     fake_df:  pd.DataFrame,
     num_cols: list[str],
     cat_cols: list[str],
@@ -779,7 +652,7 @@ def metric_kendall(
     kendall_diff_{ci}__{cj}           – |real − fake| per pair
     """
     mode      = config.get_mode('kendall')
-    ref       = _subset(test_df, mode, config)
+    ref       = _subset(real_df, mode, config)
     fake      = _subset(fake_df, mode, config)
     n_cols, _ = _active_cols(num_cols, cat_cols, mode, config)
 

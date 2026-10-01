@@ -1,4 +1,7 @@
 # evaluation/fidelity_utils.py
+from dataclasses import dataclass, field
+from typing import Any, Literal, Optional
+
 import warnings
 import numpy as np
 import pandas as pd
@@ -6,8 +9,6 @@ from scipy import stats
 from typing import Optional
 
 from scipy.spatial.distance import cdist
-
-from evaluation.fidelity_config import EvalConfig
 
 from sklearn.metrics import (
     accuracy_score, average_precision_score, f1_score,
@@ -17,6 +18,17 @@ from sklearn.metrics import (
 from sklearn.preprocessing import LabelEncoder, label_binarize
  
 
+@dataclass
+class EvalConfig:
+    default_mode: Literal['all', 'minority'] = 'all'
+    minority_col: Optional[str] = None
+    minority_val: Any = None
+    metric_modes: dict[str, str] = field(default_factory=dict)
+    # pre_filtered=True 时，default_mode / metric_modes 对 _subset() 不再有意义，
+    # 但 minority_col 仍供 _active_cols() 使用
+    pre_filtered: bool = False
+    def get_mode(self, metric: str) -> str:
+        return self.metric_modes.get(metric, self.default_mode)
 
 
 # =================================================================

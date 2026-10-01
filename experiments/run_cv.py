@@ -107,8 +107,8 @@ def build_config():
 
 
 def load_data(dataset_name: str):
-    with open("data/dataset_info.json", "r", encoding="utf-8") as f:
-        dataset_info = json.load(f)
+    with open("data/datasets_info.json", "r", encoding="utf-8") as f:
+        datasets_info = json.load(f)
 
     #df_all = pd.read_csv(f"./data/{dataset_name}.csv")
 
@@ -120,8 +120,8 @@ def load_data(dataset_name: str):
         if s.dtype == object else s
     )
 
-    target_col = dataset_info[dataset_name]["target"]
-    minority_class = dataset_info[dataset_name].get("minority_class")
+    target_col = datasets_info[dataset_name]["target"]
+    minority_class = datasets_info[dataset_name].get("minority_class")
     if target_col not in df_all.columns:
         df_all[target_col] = 1
 
@@ -143,7 +143,7 @@ def run_one_fold(dataset_name, fold_idx, df_all, target_col, num_col_idx, cat_co
         fold_idx=fold_idx,
         n_folds=N_FOLDS,
         target_minority_class=minority_class,
-        only_splits=True,
+        only_splits=False,
     )
     gc.collect()
     return results

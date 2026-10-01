@@ -33,7 +33,7 @@ TABSYN_ROOT = "E:/projects/tabsyn-main"           # 改成本地 tabsyn 仓库�
 DDPM_MED_SPLIT_DIR = "splits"             # 对应 ddpm_med 里 run_experiment 的 split_dir
 TASK = "full_data"                        # 对应 exp_cfg.training.task
 TASK_TYPE = "binclass"                    # tabsyn 需要: "binclass" | "regression"
-DATASET_INFO_PATH = "data/dataset_info.json"
+DATASETS_INFO_PATH = "data/datasets_info.json"
 DATASETS_IDX_PATH = "data/datasets_idx.json"
 # =====================================================================
 
