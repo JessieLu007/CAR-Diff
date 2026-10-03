@@ -1,10 +1,17 @@
 import os
 import json
-import pickle
+from pathlib import Path
+
+
+def _load_datasets() -> list[str]:
+    cfg = Path(__file__).resolve().parents[1] / 'data' / 'datasets_info.json'
+    data = json.loads(cfg.read_text(encoding='utf-8'))
+    # 过滤掉以下划线开头的元数据 key（以后加 "_meta" 之类不会被当成数据集）
+    return [k for k in data if not k.startswith('_')]
 
 
 # 训练数据集名称
-DATASETS = ['chronic_kidney_disease','diabetic_data','framingham', 'hcv_egy_data','hepatitis','risk_factors_cervical_cancer']
+DATASETS: list[str] = _load_datasets()
 SEEDS = [2026, 2027, 2028, 2029, 2030]
 
 # 对比方法名称

@@ -1,4 +1,4 @@
-# 文件位置: experiments/run_experiment.py
+# experiments/run_experiment.py
 from dataclasses import asdict
 import json
 import numpy as np
@@ -87,12 +87,6 @@ def run_experiment(
                 json.dump(target_mapper.to_dict(), f, indent=4, ensure_ascii=False)
 
             # ---------------- 数据划分 (五折， 不含验证集）----------------
-            # folds_idx = make_kfold_splits(
-            #     dataset_name, df_all, target_col, n_folds=n_folds,
-            #     random_seed=exp_cfg.pipeline.random_seed, split_dir=split_dir,
-            # )
-            # df_train, df_test = get_fold(df_all, folds_idx, fold_idx)
-            # print(f"📊 第{fold_idx+1}/{n_folds}折: train={len(df_train)} test={len(df_test)}")
 
             folds_idx, df_all = make_kfold_splits(
             dataset_name,
@@ -137,6 +131,20 @@ def run_experiment(
                 )
             imputed_cache_dir = os.path.join(
                 split_dir, f"{dataset_name}_seed{exp_cfg.pipeline.random_seed}_{task}_fold{fold_idx}_imputed"
+            )
+
+            # ★ 严格对齐：上面的 processor 只用于补全，之后模型只从补全后的表出发
+            imputer = processor
+            if task in ("minority_uncond", "minority_cond"):
+                df_train_ref = df_train_imputed[df_train_imputed[target_col] == minority_class].copy()
+            else:
+                df_train_ref = df_train_imputed
+            df_model_train, y_train = route_task_data(df_train_ref, target_col, task, null_idx, minority_class)
+            assert not df_model_train.isna().any().any(), "补全后的训练表仍含缺失值"
+            processor = build_processor(
+                df_model_train, original_columns, num_col_idx, cat_col_idx, target_col, task,
+                exp_cfg.data.num_transform_method, exp_cfg.data.cat_encoding_method,
+                exp_cfg.pipeline.random_seed,
             )
 
             # ---------------- 划分信息（供后续复核/对比使用；real_train/test 的实际数据在 imputed_cache_dir 下） ----------------            

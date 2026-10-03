@@ -1,79 +1,22 @@
-# evaluation/fidelity_utils.py
-from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
-
+# evaluation/utils.py
+from typing import Optional
 import warnings
+
+import shap
 import numpy as np
 import pandas as pd
 from scipy import stats
-from typing import Optional
 
-from scipy.spatial.distance import cdist
-
-from sklearn.metrics import (
-    accuracy_score, average_precision_score, f1_score,
-    recall_score, roc_auc_score,
-)
-
+from sklearn.metrics import accuracy_score, average_precision_score, f1_score, recall_score, roc_auc_score
 from sklearn.preprocessing import LabelEncoder, label_binarize
- 
-
-@dataclass
-class EvalConfig:
-    default_mode: Literal['all', 'minority'] = 'all'
-    minority_col: Optional[str] = None
-    minority_val: Any = None
-    metric_modes: dict[str, str] = field(default_factory=dict)
-    # pre_filtered=True 时，default_mode / metric_modes 对 _subset() 不再有意义，
-    # 但 minority_col 仍供 _active_cols() 使用
-    pre_filtered: bool = False
-    def get_mode(self, metric: str) -> str:
-        return self.metric_modes.get(metric, self.default_mode)
+from sklearn.metrics.pairwise import cosine_similarity
+from scipy.stats import spearmanr
+from xgboost import XGBClassifier
 
 
 # =================================================================
 # internal helper
 # =================================================================
-
-def _subset(df: pd.DataFrame, mode: str, config: EvalConfig) -> pd.DataFrame:
-    if config.pre_filtered:
-        return df.copy() # 数据已预过滤，直接返回 
-    """Return minority subset or full DataFrame based on mode."""
-    if mode == 'minority':
-        if config.minority_col is None:
-            raise ValueError(
-                "EvalConfig.minority_col must be set when using mode='minority'."
-            )
-        sub = df[df[config.minority_col] == config.minority_val]
-        if len(sub) == 0:
-            warnings.warn(
-                f"Minority subset is empty "
-                f"(col='{config.minority_col}', val={config.minority_val!r})."
-            )
-        return sub.copy()
-    return df.copy()
-
-
-def _active_cols(
-    num_cols: list[str],
-    cat_cols: list[str],
-    mode: str,
-    config: EvalConfig,
-) -> tuple[list[str], list[str]]:
-    """
-    In minority mode, minority_col is constant across the subset → exclude it.
-    Constant columns corrupt correlation matrices and distance computations.
-    """
-    should_exclude = (
-        config.minority_col is not None
-        and (mode == 'minority' or config.pre_filtered)
-    )
-    if should_exclude:
-        n = [c for c in num_cols if c != config.minority_col]
-        c = [c for c in cat_cols if c != config.minority_col]
-        return n, c
-    return list(num_cols), list(cat_cols)
-
 
 def _encode_scale(
     ref_df: pd.DataFrame,
@@ -231,8 +174,14 @@ def _g_mean(y_true: np.ndarray, y_pred: np.ndarray) -> float:
         y_true, y_pred, labels=classes, average=None, zero_division=0
     )
     return float(np.prod(recalls) ** (1.0 / len(classes)))
- 
- 
+
+
+def _kendall_mat(df, cols):
+    K = df[cols].astype(float).corr(method='kendall').fillna(0.0).to_numpy(copy=True)
+    np.fill_diagonal(K, 1.0)
+    return pd.DataFrame(K, index=cols, columns=cols)
+
+
 def _score_clf(
     clf,
     X_test:    np.ndarray,
@@ -291,49 +240,76 @@ def _score_clf(
     return out
 
 
-def _kendall_mat(df: pd.DataFrame, num_cols: list[str]) -> pd.DataFrame:
-    """Pairwise Kendall τ-b matrix for numerical columns only."""
-    n = len(num_cols)
-    C = np.zeros((n, n))
-    for i, ci in enumerate(num_cols):
-        for j, cj in enumerate(num_cols):
-            if i == j:
-                C[i, j] = 1.0
-            elif j < i:
-                C[i, j] = C[j, i]
-            else:
-                a = df[ci].values.astype(float)
-                b = df[cj].values.astype(float)
-                C[i, j] = (
-                    float(stats.kendalltau(a, b).statistic)
-                    if np.std(a) > 1e-8 and np.std(b) > 1e-8
-                    else 0.0
-                )
-    return pd.DataFrame(C, index=num_cols, columns=num_cols)
+def compute_crps(train: pd.DataFrame, syn: pd.DataFrame, top_k: int = 10):
+    x_train = train.iloc[:, :-1]
+    y_train = train.iloc[:, -1]
+
+    x_syn = syn.iloc[:, :-1]
+    y_syn = syn.iloc[:, -1]
+
+    clf = XGBClassifier(
+        n_estimators=300,
+        max_depth=5,
+        learning_rate=0.05,
+        random_state=42
+    )
+
+    clf.fit(x_train, y_train)
+    importance = clf.feature_importances_
+    
+    top_idx = np.argsort(importance)[::-1][:top_k]
+    top_features = x_train.columns[top_idx]
+
+    corr_real = (x_train[top_features].corr(method='spearman').values)
+    corr_syn  = (x_syn[top_features].corr(method='spearman').values)
+
+    fro_diff = np.linalg.norm(corr_real - corr_syn, ord='fro')
+    fro_real = np.linalg.norm(corr_real, ord='fro')
+
+    crps_F = 1 - fro_diff / (fro_real + 1e-8)
+
+    idx = np.triu_indices_from(corr_real, k=1)
+    r_real = corr_real[idx]
+    r_syn  = corr_syn[idx]
+
+    crps_S = spearmanr(r_real, r_syn).correlation
+
+    return crps_F, crps_S
 
 
+def compute_shap_preservation(train: pd.DataFrame, syn: pd.DataFrame):
+    x_real = train.iloc[:, :-1]
+    y_real = train.iloc[:, -1]
 
-# fidelity_utils.py 新增
-def _encode_mixed(ref_df, *other_dfs, num_cols, cat_cols):
-    encoders = {c: LabelEncoder().fit(ref_df[c].astype(str)) for c in cat_cols}
-    num_arrays, cat_arrays = [], []
-    for df in (ref_df, *other_dfs):
-        num_arrays.append(df[num_cols].values.astype(float))
-        if cat_cols:
-            cat_arrays.append(np.column_stack([
-                df[c].astype(str).map(
-                    lambda v, _le=encoders[c]: _le.transform([v])[0] if v in _le.classes_ else -1
-                ).to_numpy() for c in cat_cols
-            ]))
-        else:
-            cat_arrays.append(np.empty((len(df), 0)))
-    ranges = np.ptp(np.vstack(num_arrays), axis=0)
-    ranges = np.where(ranges == 0, 1e-5, ranges)
-    return num_arrays, cat_arrays, ranges
+    x_syn = syn.iloc[:, :-1]
+    y_syn = syn.iloc[:, -1]
 
-def _gower_dist(num_a, cat_a, num_b, cat_b, ranges):
-    n_num, n_cat = num_a.shape[1], cat_a.shape[1]
-    d = cdist(num_a / ranges, num_b / ranges, metric='cityblock')
-    if n_cat:
-        d = d + cdist(cat_a, cat_b, metric='hamming') * n_cat
-    return d / (n_num + n_cat)
+    clf_real = XGBClassifier(
+        n_estimators=300,
+        max_depth=5,
+        learning_rate=0.05,
+        random_state=42
+    )
+    clf_real.fit(x_real, y_real)
+
+    clf_syn = XGBClassifier(
+        n_estimators=300,
+        max_depth=5,
+        learning_rate=0.05,
+        random_state=42
+    )
+    clf_syn.fit(x_syn, y_syn)
+
+    explainer_real = shap.TreeExplainer(clf_real)
+    explainer_syn = shap.TreeExplainer(clf_syn)
+
+    shap_real = explainer_real.shap_values(x_real)
+    shap_syn = explainer_syn.shap_values(x_real)
+
+    imp_real = np.abs(shap_real).mean(axis=0)
+    imp_syn  = np.abs(shap_syn).mean(axis=0)
+
+    shap_corr = spearmanr(imp_real, imp_syn).correlation
+    cos = cosine_similarity(imp_real.reshape(1, -1), imp_syn.reshape(1, -1))[0,0]
+
+    return shap_corr, cos

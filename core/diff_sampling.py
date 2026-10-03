@@ -177,3 +177,4 @@ def sample_core(
     # ── 4. 解码输出 ──────────────────────────────────────────────────
     x_cat = ohe_to_categories(log_x_cat.exp(), model.num_classes)
     return torch.cat([x_num, x_cat], dim=1)
+

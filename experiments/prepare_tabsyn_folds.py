@@ -14,6 +14,7 @@
     python main.py --dataname ckd_fold0 --method tabsyn --mode train
     python main.py --dataname ckd_fold0 --method tabsyn --mode sample --save_path synthetic/ckd_fold0/tabsyn.csv
 """
+from pathlib import Path
 import os, sys, json, shutil, argparse
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -29,7 +30,7 @@ DEFAULT_DATASET = common.DATASETS[0]
 DEFAULT_SEED = 2026
 DEFAULT_N_FOLDS = 5
 
-TABSYN_ROOT = "E:/projects/tabsyn-main"           # 改成本地 tabsyn 仓库路径
+TABSYN_ROOT = os.environ.get('TABSYN_ROOT', str(Path(__file__).resolve().parents[2] / 'tabsyn-main'))
 DDPM_MED_SPLIT_DIR = "splits"             # 对应 ddpm_med 里 run_experiment 的 split_dir
 TASK = "full_data"                        # 对应 exp_cfg.training.task
 TASK_TYPE = "binclass"                    # tabsyn 需要: "binclass" | "regression"
