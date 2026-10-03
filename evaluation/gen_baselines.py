@@ -16,6 +16,8 @@
   * SMOTE：每个类别扩到原来的 2 倍并只取新增样本，故共 len(train) 行且类别比例不变。
 """
 from __future__ import annotations
+import shutil
+from evaluation.align import make_aligner
 import argparse
 import random
 import time
@@ -40,6 +42,18 @@ def _seed_all(s: int) -> None:
         pass
 
 
+def realign_existing(root, ds, k, align):
+    """对已保存的文件重新对齐：首次先把原文件备份到 raw/，之后总是从备份对齐（可重复执行）。"""
+    d = Path(root) / 'synthetic' / f'{ds}_fold{k}'
+    raw = Path(root) / 'raw' / 'synthetic' / f'{ds}_fold{k}'
+    raw.mkdir(parents=True, exist_ok=True)
+    for p in sorted(d.glob('*.csv')):
+        if not (raw / p.name).exists():
+            shutil.copy2(p, raw / p.name)
+        align(pd.read_csv(raw / p.name)).to_csv(p, index=False)
+        print(f'[realign] {ds}_fold{k}/{p.name}')
+
+
 # ── 各方法：统一签名 (train, test, meta, name, seed, js) -> [DataFrame]，与 js 一一对应 ─────────
 
 def gen_smote(train, test, meta, name, seed, js):
@@ -62,10 +76,14 @@ def gen_smote(train, test, meta, name, seed, js):
     return out
 
 
-def gen_ctgan(train, test, meta, name, seed, js):
+def gen_ctgan(train, test, meta, name, seed, js, epochs=300, batch_size=500):
+    import torch
     from ctgan import CTGAN
     _seed_all(seed)
-    m = CTGAN()
+    m = CTGAN(epochs=epochs, batch_size=batch_size, verbose=True,
+              cuda=torch.cuda.is_available())
+    
+    print(f'[ctgan] cuda={torch.cuda.is_available()} rows={len(train)}', flush=True)
     m.fit(train, discrete_columns=meta['cat_cols'])
     out = []
     for j in js:
@@ -125,20 +143,9 @@ GEN = {'smote': gen_smote, 'ctgan': gen_ctgan, 'tvae': gen_tvae,
        'tabddpm': gen_tabddpm, 'tabkde': gen_tabkde}
 
 
-# ── 统一的后处理：列顺序、类别取值、整数列，对所有方法一视同仁 ─────────────────────────────
+# ── 统一的后处理：列顺序、类别取值、整数列，对所有方法一视同仁 
 
-# def _canon(fake: pd.DataFrame, train: pd.DataFrame, meta: dict) -> pd.DataFrame:
-#     fake = fake[list(train.columns)].copy().reset_index(drop=True)   # 缺列/改名会在此报 KeyError
-#     for c in meta['cat_cols']:                                       # 数值型类别列：吸附到真实取值
-#         if pd.api.types.is_numeric_dtype(train[c]):
-#             vals = np.sort(train[c].unique()).astype(float)
-#             v = fake[c].to_numpy(dtype=float)
-#             fake[c] = vals[np.abs(v[:, None] - vals[None, :]).argmin(1)]
-#     for c in train.columns:                                          # 真实数据为整数的列：取整并还原 dtype
-#         if pd.api.types.is_integer_dtype(train[c]):
-#             fake[c] = fake[c].round().astype(train[c].dtype)
-#     return fake
-
+ROOT = Path(__file__).resolve().parents[1]
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -148,11 +155,15 @@ def main() -> None:
     ap.add_argument('--methods', nargs='+', default=list(GEN), choices=list(GEN))
     ap.add_argument('--n-samples', type=int, default=5, help='每折采样总次数，生成 s0..s(n-1)')
     ap.add_argument('--seed', type=int, default=common.SEEDS[0], help='基础种子；第 j 次采样使用 seed + j')
-    ap.add_argument('--ddpm-root', default=r'e:\projects\ddpm_med')
+    ap.add_argument('--ddpm-root', default=str(ROOT))
     ap.add_argument('--synth-root', default=None, help='默认等于 --ddpm-root')
     ap.add_argument('--info', default=None)
+    ap.add_argument('--realign', action='store_true', help='对已保存的文件就地重新对齐（不训练、不采样）')
     ap.add_argument('--split-seed', type=int, default=common.SEEDS[0])
     ap.add_argument('--force', action='store_true')
+
+    ap.add_argument('--ctgan-epochs', type=int, default=300)
+    ap.add_argument('--ctgan-bs', type=int, default=500)   # 必须是 10 的倍数（pac=10）
     a = ap.parse_args()
     root = a.synth_root or a.ddpm_root
 
@@ -163,6 +174,10 @@ def main() -> None:
         meta = load_meta(a.info or Path(a.ddpm_root) / 'data' / 'datasets_info.json', ds)
         for k in folds:
             train, test = load_fold(a.ddpm_root, ds, k, a.split_seed)
+            align = make_aligner(train, meta)
+            if a.realign:
+                realign_existing(root, ds, k, align)
+                continue
             name = f'{ds}_fold{k}'
             for m in a.methods:
                 js = [j for j in range(a.n_samples)
@@ -173,11 +188,17 @@ def main() -> None:
                 print(f'[gen] {name} {m} samples={js}', flush=True)
                 t0 = time.time()
                 try:
-                    frames = GEN[m](train, test, meta, name, a.seed, js)
-                    # frames = [_canon(f, train, meta) for f in frames]
+                    if m == 'ctgan':
+                        frames = gen_ctgan(train, test, meta, name, a.seed, js, a.ctgan_epochs, a.ctgan_bs)
+                    else:
+                        frames = GEN[m](train, test, meta, name, a.seed, js)
+                    # for j, df in zip(js, frames):                        # 先保存原始输出
+                    #     save_fake(df, Path(root) / 'raw', m, ds, k, j)
+                    frames = [align(f) for f in frames]                  # 再对齐
                 except Exception:
                     print(f'[fail] {name} {m}'); traceback.print_exc()
                     continue
+                
                 for j, df in zip(js, frames):
                     save_fake(df, root, m, ds, k, j)
                 print(f'[done] {name} {m}  rows={len(frames[0])}  {time.time() - t0:.0f}s')
