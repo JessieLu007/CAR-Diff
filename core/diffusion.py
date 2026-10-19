@@ -12,10 +12,9 @@ from typing import Optional
 from .utils import extract, index_to_log_onehot, log_1_min_a, log_add_exp, ohe_to_categories
 from configs.experiment_configs import ModelConfig, TrainingConfig, SamplingConfig
 
-from .num_loss import compute_numerical_loss
-from .cat_loss import compute_categorical_loss, MarginalEMATracker
+from .loss import compute_numerical_loss, compute_categorical_loss
 from .diff_schedules import DiffusionScheduleMixin
-from .diff_sampling import sample_core
+from .diff_sampling import sample_core, gumbel_sample
 from .diff_training import train_loop, smooth_labels
 
 
@@ -101,12 +100,6 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         self.meta_info              = meta_info
         self.num_numerical_features = meta_info['num_numerical']
         self.num_classes            = [int(n) for n in meta_info['num_classes']]
-        self.true_marginals         = [m.to(self.device) for m in meta_info['true_marginals']]
-
-        self._marginal_imbalance_cache = [
-            max(0.0, 1.0 - 2.0 * prior.min().item())
-            for prior in self.true_marginals
-        ]
 
         self._init_class_expanded()
 
@@ -114,14 +107,23 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         is_minority = self.train_cfg.task in ('minority_uncond', 'minority_cond')
         dropout = 0.2 if is_minority else self.model_cfg.dropout
 
-        self._denoise_fn = self.denoise_class(
+        net_kwargs = dict(
             task=self.train_cfg.task,
             info=self.meta_info,
+            num_classes_cond=self.model_cfg.null_class_idx,   # 嵌入表大小 = null_class_idx + 1
             dim_t=self.model_cfg.dim_t,
             dim_hidden=self.model_cfg.dim_hidden,
             num_layers=self.model_cfg.num_layers,
             dropout=dropout,
-        ).to(self.device)
+        )
+        cat_mode = getattr(self.model_cfg, 'cat_input_mode', 'legacy')
+        if cat_mode != 'legacy':
+            net_kwargs['cat_input_mode'] = cat_mode
+        for k in ('use_num_from_cat', 'use_cat_from_num', 'use_cat_self_attn', 
+                  'use_cat_tokens', 'share_decoder'):
+            if getattr(self.model_cfg, k, True) is not True:
+                net_kwargs[k] = False
+        self._denoise_fn = self.denoise_class(**net_kwargs).to(self.device)
 
         self.to(self.device)
 
@@ -188,7 +190,7 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         return raw
 
 
-    def compute_loss(self, batch_x, batch_y, marginal_tracker=None):
+    def compute_loss(self, batch_x, batch_y):
         b = batch_x.shape[0]
         t = torch.randint(0, self.model_cfg.num_timesteps, (b,), device=self.device).long()
 
@@ -228,30 +230,25 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
             log_1_min_cumprod_alpha_t - torch.log(self.num_classes_expanded),
         )
 
-        x_in = torch.cat([x_num_t, log_x_cat_t.exp()], dim=1)
+        #x_in = torch.cat([x_num_t, log_x_cat_t.exp()], dim=1)
+        if getattr(self.model_cfg, 'cat_input_mode', 'legacy') == 'sampled':
+            x_cat_in = self._sample_cat_xt(log_x_cat_t)
+        else:
+            x_cat_in = log_x_cat_t.exp()
+        x_in = torch.cat([x_num_t, x_cat_in], dim=1)
         model_out = self._denoise_fn(x_in, t, y_cond)
 
-        loss_num, loss_corr = compute_numerical_loss(self, x_num, x_num_t, model_out, t, noise)
-
-        if marginal_tracker is not None:
-            marginal_tracker.update(model_out, self.slices_for_classes)
-        loss_cat = compute_categorical_loss(
-            self, 
-            x_cat, 
-            model_out, 
-            timesteps = t, 
-            #use_basic  = self.model_cfg.use_basic, 
-            marginal_tracker=marginal_tracker,)
+        loss_num = compute_numerical_loss(self, x_num, x_num_t, model_out, t, noise)
+        loss_cat = compute_categorical_loss(self, x_cat, model_out)
 
         # 使用不确定性加权公式：Loss = (1 / e^log_var) * L + log_var
         prec_num = torch.exp(-self.log_vars[0])
         prec_cat = torch.exp(-self.log_vars[1])
 
         total_loss = (prec_num * loss_num + self.log_vars[0]) + \
-                     (prec_cat * loss_cat + self.log_vars[1]) + \
-                     self.model_cfg.corr_weight * loss_corr
+                     (prec_cat * loss_cat + self.log_vars[1])
 
-        return total_loss, loss_num, loss_cat, loss_corr
+        return total_loss, loss_num, loss_cat
 
     def _init_class_expanded(self):
         self.num_classes_expanded = torch.from_numpy(
@@ -263,3 +260,12 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
             torch.arange(int(offsets[i]), int(offsets[i+1]), device=self.device)
             for i in range(len(self.num_classes))
         ]
+
+    def _sample_cat_xt(self, log_x_cat_t: torch.Tensor) -> torch.Tensor:
+        """按 q(x_t|x_0) 逐列硬采样，返回拼接的 one-hot [B, sum(K)]。"""
+        outs = []
+        for ix in self.slices_for_classes:
+            lp  = log_x_cat_t[:, ix]
+            idx = gumbel_sample(lp, 1.0)
+            outs.append(F.one_hot(idx, num_classes=lp.shape[1]).float())
+        return torch.cat(outs, dim=1)

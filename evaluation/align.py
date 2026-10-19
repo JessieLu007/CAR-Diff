@@ -13,6 +13,8 @@ def make_aligner(train: pd.DataFrame, meta: dict):
     proc = TabularDataProcessor(num_idx, cat_idx).fit(train)
 
     def align(fake: pd.DataFrame) -> pd.DataFrame:
+        fake = fake.copy()
+        fake.columns = fake.columns.str.strip()
         fake = fake[cols].copy().reset_index(drop=True)          # 缺列或改名会在此报 KeyError
         for c in meta['cat_cols']:                               # 数值编码的类别列：吸附到真实取值
             if pd.api.types.is_numeric_dtype(train[c]):

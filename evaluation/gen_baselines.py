@@ -17,6 +17,8 @@
 """
 from __future__ import annotations
 import shutil
+import json
+import torch
 from evaluation.align import make_aligner
 import argparse
 import random
@@ -27,6 +29,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import synthcity.plugins.core.models.tabular_ddpm as td_mod
 
 from evaluation.paths import fake_path, save_fake, load_fold, load_meta
 from utils import common
@@ -40,6 +43,9 @@ def _seed_all(s: int) -> None:
         torch.manual_seed(s)
     except ImportError:
         pass
+
+DDPM_EXTRA = {}
+DDPM_STATS = {}
 
 
 def realign_existing(root, ds, k, align):
@@ -56,7 +62,7 @@ def realign_existing(root, ds, k, align):
 
 # ── 各方法：统一签名 (train, test, meta, name, seed, js) -> [DataFrame]，与 js 一一对应 ─────────
 
-def gen_smote(train, test, meta, name, seed, js):
+def gen_smote(train, test, meta, name, seed, js, on_each=None):
     from imblearn.over_sampling import SMOTE, SMOTENC
     label = meta['label_col']
     feats = [c for c in meta['num_cols'] + meta['cat_cols'] if c != label]
@@ -64,23 +70,25 @@ def gen_smote(train, test, meta, name, seed, js):
     X, y = train[feats], train[label]
     cnt = y.value_counts()
     strategy = {c: 2 * n for c, n in cnt.items()}
-    k = max(1, min(5, int(cnt.min()) - 1))            # 类内样本数需大于 k_neighbors
+    k = max(1, min(5, int(cnt.min()) - 1))
     out = []
     for j in js:
         kw = dict(sampling_strategy=strategy, k_neighbors=k, random_state=seed + j)
         sm = SMOTENC(categorical_features=cats, **kw) if cats else SMOTE(**kw)
         Xr, yr = sm.fit_resample(X, y)
-        df = Xr.iloc[len(X):].copy()                   # imblearn 把新增样本追加在原样本之后
+        df = Xr.iloc[len(X):].copy()
         df[label] = yr.iloc[len(X):].to_numpy()
         out.append(df)
+        if on_each is not None:
+            on_each(j, df)
     return out
 
 
-def gen_ctgan(train, test, meta, name, seed, js, epochs=300, batch_size=500):
+def gen_ctgan(train, test, meta, name, seed, js, batch_size=500):
     import torch
     from ctgan import CTGAN
     _seed_all(seed)
-    m = CTGAN(epochs=epochs, batch_size=batch_size, verbose=True,
+    m = CTGAN(batch_size=batch_size, verbose=True,
               cuda=torch.cuda.is_available())
     
     print(f'[ctgan] cuda={torch.cuda.is_available()} rows={len(train)}', flush=True)
@@ -92,28 +100,71 @@ def gen_ctgan(train, test, meta, name, seed, js, epochs=300, batch_size=500):
     return out
 
 
-def _synthcity(plugin, train, seed, js, **kw):
+def _synthcity(plugin, train, meta, seed, js, **kw):
     from synthcity.plugins import Plugins
+    import synthcity.plugins.core.models.tabular_ddpm as td_mod
     _seed_all(seed)
     m = Plugins().get(plugin, **kw)
-    m.fit(train)
-    out = []
-    for j in js:
-        _seed_all(seed + j)
-        try:                                           # 部分版本的 generate 接受 random_state
-            df = m.generate(count=len(train), random_state=seed + j).dataframe()
-        except TypeError:
-            df = m.generate(count=len(train)).dataframe()
-        out.append(df)
+
+    patch = (plugin == 'ddpm')
+    if patch:
+        cats = [c for c in meta['cat_cols'] if c in train.columns]
+        orig_fit = m.encoder.fit
+        m.encoder.fit = lambda X, discrete_columns=None, **k: orig_fit(X, discrete_columns=list(cats), **k)
+        old_dc = td_mod.discrete_columns
+        td_mod.discrete_columns = lambda X, max_classes=10, return_counts=False: [
+            (c, int(X[c].nunique())) if return_counts else c for c in cats if c in X.columns]
+    try:
+        m.fit(train)
+        if plugin == 'ddpm':
+            DDPM_STATS.update(batches=m.model.n_batches, skipped=m.model.n_skipped)
+            print(f'[ddpm] batches={m.model.n_batches} skipped={m.model.n_skipped}', flush=True)
+        out = []
+        for j in js:
+            _seed_all(seed + j)
+            try:
+                df = m.generate(count=len(train), random_state=seed + j).dataframe()
+            except TypeError:
+                df = m.generate(count=len(train)).dataframe()
+            out.append(df)
+    finally:
+        if patch:
+            td_mod.discrete_columns = old_dc
     return out
 
 
 def gen_tvae(train, test, meta, name, seed, js):
-    return _synthcity('tvae', train, seed, js, n_iter=1000)
+    bs = 2000 if len(train) > 20000 else 200
+    return _synthcity('tvae', train, meta, seed, js, n_iter=1000, batch_size=bs)
 
+
+def _merge_rare(df, cols, min_count=20):
+    df = df.copy()
+    for c in cols:
+        df[c] = df[c].astype(str)                    # 整型 ID 列也统一成字符串，避免混型
+        vc = df[c].value_counts()
+        rare = vc[vc < min_count].index
+        df.loc[df[c].isin(rare), c] = 'other_rare'
+    return df
 
 def gen_tabddpm(train, test, meta, name, seed, js):
-    return _synthcity('ddpm', train, seed, js)
+    #return _synthcity('ddpm', train, meta, seed, js)
+    const = {c: train[c].iloc[0] for c in train.columns if train[c].nunique() <= 1}
+    tr = train.drop(columns=list(const))
+    cats = [c for c in meta['cat_cols'] if c in tr.columns]
+    cmap = {}
+    for c in cats:
+        cat = pd.Categorical(tr[c])
+        cmap[c] = cat.categories
+        tr[c] = cat.codes
+    frames = _synthcity('ddpm', tr, meta, seed, js, **DDPM_EXTRA) # lr=1e-5, 
+    for df in frames:
+        for c in cats:
+            k = len(cmap[c])
+            df[c] = cmap[c][df[c].round().astype(int).clip(0, k - 1).to_numpy()]
+        for c, v in const.items():
+            df[c] = v
+    return frames
 
 
 def gen_tabkde(train, test, meta, name, seed, js):
@@ -125,7 +176,7 @@ def gen_tabkde(train, test, meta, name, seed, js):
 
     def args(n):
         return SimpleNamespace(
-            dataname=name, device='cpu', method='TabKDE', mode='train',
+            dataname=name, device='cuda' if torch.cuda.is_available() else 'cpu', method='TabKDE', mode='train',
             decorrelation=False, cat_encoding_ordinal='ours', copula_encoder=1,
             latent_encoding='vae', rank_encoding=1, steps=50, num_samples=n,
             save_path=Path('synthetic') / name)        # 仅为形式，实现中已不保存
@@ -161,9 +212,11 @@ def main() -> None:
     ap.add_argument('--realign', action='store_true', help='对已保存的文件就地重新对齐（不训练、不采样）')
     ap.add_argument('--split-seed', type=int, default=common.SEEDS[0])
     ap.add_argument('--force', action='store_true')
-
-    ap.add_argument('--ctgan-epochs', type=int, default=300)
     ap.add_argument('--ctgan-bs', type=int, default=500)   # 必须是 10 的倍数（pac=10）
+    ap.add_argument('--ddpm-lr', type=float, default=None)
+    ap.add_argument('--subsample', type=int, default=None, help='冒烟测试：train 随机抽样行数')
+    ap.add_argument('--n-iter', type=int, default=None, help='冒烟测试：仅对 tabddpm 覆盖 n_iter')
+    
     a = ap.parse_args()
     root = a.synth_root or a.ddpm_root
 
@@ -174,6 +227,16 @@ def main() -> None:
         meta = load_meta(a.info or Path(a.ddpm_root) / 'data' / 'datasets_info.json', ds)
         for k in folds:
             train, test = load_fold(a.ddpm_root, ds, k, a.split_seed)
+
+            if a.ddpm_lr:
+                DDPM_EXTRA['lr'] = a.ddpm_lr
+
+            if a.subsample and len(train) > a.subsample:
+                train = train.sample(n=a.subsample, random_state=a.split_seed).reset_index(drop=True)
+
+            if a.n_iter:
+                DDPM_EXTRA['n_iter'] = a.n_iter
+            
             align = make_aligner(train, meta)
             if a.realign:
                 realign_existing(root, ds, k, align)
@@ -189,7 +252,10 @@ def main() -> None:
                 t0 = time.time()
                 try:
                     if m == 'ctgan':
-                        frames = gen_ctgan(train, test, meta, name, a.seed, js, a.ctgan_epochs, a.ctgan_bs)
+                        frames = gen_ctgan(train, test, meta, name, a.seed, js, a.ctgan_bs)
+                    elif m == 'smote':
+                        frames = gen_smote(train, test, meta, name, a.seed, js,
+                                        on_each=lambda j, df, m=m: save_fake(align(df), root, m, ds, k, j))
                     else:
                         frames = GEN[m](train, test, meta, name, a.seed, js)
                     # for j, df in zip(js, frames):                        # 先保存原始输出
@@ -201,6 +267,9 @@ def main() -> None:
                 
                 for j, df in zip(js, frames):
                     save_fake(df, root, m, ds, k, j)
+                if m == 'tabddpm' and DDPM_STATS:
+                    p = Path(root) / 'synthetic' / name / 'tabddpm_train_stats.json'
+                    p.write_text(json.dumps({**DDPM_STATS, 'lr': DDPM_EXTRA.get('lr')}))
                 print(f'[done] {name} {m}  rows={len(frames[0])}  {time.time() - t0:.0f}s')
 
                 # 检查各次采样是否真的不同

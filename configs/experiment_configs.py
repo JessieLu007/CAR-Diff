@@ -1,6 +1,6 @@
 # configs/experiment_configs.py
-from dataclasses import dataclass, field, replace
-from typing import List, Optional, Literal
+from dataclasses import dataclass, replace
+from typing import Optional, Literal
 
 
 @dataclass
@@ -13,64 +13,68 @@ class DataConfig:
 
 @dataclass
 class PipelineConfig:
-    # 可以设置为[0,1,2,3,4]，已保存这几个的补全缺失值数据集用于对比训练
     random_seed: int = 0  
     save_base_dir: str = "results"
+    tag: str = "" # 运行标签，写入结果文件夹名，用于区分变体/种子
 
 @dataclass
 class ModelConfig:
     """网络架构参数"""
     dim_t: int = 256
-    dim_hidden: int = 512
+    dim_hidden: int = 256
     num_layers: int = 3
     dropout: float = 0.1
-    num_timesteps: int = 1000
+    num_timesteps: int = 200
 
     # 控制模型prediction模式
     # 默认eps,可切换为x0,此时直接预测x0而非噪声epsilon，当前模式下eps效果最好，暂时不考虑x0
     prediction_type: str = 'eps' 
     version: str = "v2" # 新增模型版本 "v1" 或者 "v2"
 
+    # 分类列去噪输入模式：'legacy'(默认) | 'prob' | 'sampled'
+    cat_input_mode: Literal['legacy', 'prob','sampled'] = 'legacy'
+    use_cat_tokens: bool = True   # False：去掉整条类别 token 通路（仅 legacy 有意义，勿与 cat_input_mode 同时使用）
+
+    share_decoder: bool = True 
+    
+
+    # 数值–类别交互开关（消融用，默认全开 = main）
+    use_num_from_cat: bool = True
+    use_cat_from_num: bool = True
+    use_cat_self_attn: bool = True
+
     # 损失组件
-    focal_mode: str = "adaptive"  # "off" | "fixed" | "adaptive"
-    use_marginal_align: bool = True 
     use_normal_reg: bool = False
-    logit_adj_tau: float = 0.3          # LA loss先验修正强度
-    gamma_base: float = 1.0             # focal loss中的gamma_base设置
-    focal_alpha_scale: float = 1.0
-    gma_loss_weight: float = 0.1        # Global Marginal Alignment(GMA) 权重
-    corr_weight: float = 0.0            # 相关性权重损失
-    corr_t_ratio: float = 0.2           # 相关性触发的噪声阶段比率
+    corr_t_ratio: float = 0.5           # 相关性触发的噪声阶段比率
 
     # CFG 与后验参数
     null_class_idx: int = 5
-    posterior_switch_ratio: float = 0.3
-    cat_temperature_cap: float = 0.6
 
-    x0_clamp_min: float = -5.0
-    x0_clamp_max: float = 5.0
+    x0_clamp_min: float = -4.0
+    x0_clamp_max: float = 4.0
 
 
 @dataclass
 class TrainingConfig:
     """训练数据范围与建模范式控制"""
-    batch_size: int = 128
+    batch_size: int = 64
     total_steps: int = None
-    target_epochs: int = 100
+    target_epochs: int = 200
     use_two_phase: bool = False
-    lr: float = 1e-4
+    lr: float = 1e-3
     uncond_p: float = 0.1   # CFG 空条件丢弃率（仅 *_cond 范式生效）
     patience: int = 10
     eval_every: int = 100
     last_batch_strategy: str = "drop" # "drop" | "pad"
 
+    step_floor: int = 0
+    use_early_stop: bool = True # False = 固定预算，用最终权重
+
     use_label_smoothing: bool = False # 是否对minority_cond的真实标签做随机平滑
     label_smooth_prob: float = 0.05   # 平滑概率，含义同diff_training.smooth_labels
     enable_amp: bool = False
-    diagnose_compile: bool = False
-    profile_mode: bool = True
-    profile_steps:int  = 20
     enable_compile: bool = True
+    enable_nan_check:bool = False
 
     # ------------------------------------------------------------------
     # task：训练范式，调用方始终传入全量数据，内部自动路由
@@ -96,23 +100,13 @@ class TrainingConfig:
         'minority_cond',
     ] = 'full_data'
 
-    # 训练/生成的主要目标
-    # fidelity  : 拟真（分布贴近真实）
-    # clf_boost : 帮助分类器（允许牺牲一些拟真）
-    objective: Literal['fidelity', 'clf_boost'] = 'fidelity'
-
 
 @dataclass
 class SamplingConfig:
     num_samples: Optional[int] = None
-
-    # 下方参数通常由 gen_strategy 自动覆盖，也可手动微调
+    cat_temperature_cap: float = 1.0
     cfg_scale_fidelity: float = 1.0
-    cfg_scale_boost: float = 3.0
-    temperature_fidelity: float = 1.0
-    temperature_boost: float = 0.7
     repulse_weight_fidelity: float = 0.0
-    repulse_weight_boost: float = 1.0
 
 
 @dataclass

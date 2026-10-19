@@ -4,7 +4,6 @@ import torch
 from contextlib import nullcontext
 from torch.optim.lr_scheduler import LambdaLR
 
-from .cat_loss import MarginalEMATracker
 from .loss_history import LossHistory
 
 
@@ -13,9 +12,7 @@ def get_warmup_cosine_scheduler(optimizer, warmup_steps: int,
     def lr_lambda(step) -> float:
         if step < warmup_steps:
             return float(step + 1) / float(warmup_steps)
-        progress = (step - warmup_steps) / float(
-            max(1, total_steps - warmup_steps)
-        )
+        progress = (step - warmup_steps) / float(max(1, total_steps - warmup_steps))
         cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
         return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
     return LambdaLR(optimizer, lr_lambda)
@@ -28,7 +25,6 @@ def smooth_labels(y: torch.Tensor, num_classes: int, smooth_prob: float = 0.05) 
 
 
 def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
-
     task_name = train_cfg.task
     is_minority = task_name in ('minority_uncond', 'minority_cond')
 
@@ -41,11 +37,7 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
     ENSEMBLE_K = getattr(train_cfg, 'ensemble_k', 5) if is_minority else 1
     top_k_states = []  # list of (monitor_loss, state_dict)
 
-    # ------------------------------------------------------------------
     # NaN/Inf 检查开关（速度相关）
-    #   - 之前报过 NaN/Inf 时可以打开：train_cfg.enable_nan_check = True
-    #   - 训练稳定后建议关闭：每次迭代省去多次 GPU->CPU 同步
-    # ------------------------------------------------------------------
     ENABLE_NAN_CHECK = getattr(train_cfg, 'enable_nan_check', False)
 
     ENABLE_AMP = getattr(train_cfg, 'enable_amp', False)
@@ -57,17 +49,12 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
         print("ℹ️  已启用 torch.compile(mode='reduce-overhead')，前几步会有编译预热开销")
         compiled_compute_loss = torch.compile(model.compute_loss, mode="reduce-overhead")
 
-    # ------------------------------------------------------------------
-    # 训练预算：按 epoch 数换算成 step 数，不同数据集自动适配
-    #   - 显式给了 train_cfg.total_steps 就优先用它（压力测试类数据集可单独覆盖）
-    #   - 否则用 train_cfg.target_epochs × steps_per_epoch 推导
-    # ------------------------------------------------------------------
-    #steps_per_epoch = math.ceil(len(train_dataloader.dataset) / train_dataloader.batch_size)
     steps_per_epoch = len(train_dataloader.dataset) // train_dataloader.batch_size
     if getattr(train_cfg, 'total_steps', None) is not None:
         total_steps = train_cfg.total_steps
     else:
-        total_steps = train_cfg.target_epochs * steps_per_epoch
+        total_steps = max(getattr(train_cfg, 'step_floor', 0), 
+                          train_cfg.target_epochs * steps_per_epoch)
     print(f"ℹ️  steps_per_epoch={steps_per_epoch} → total_steps={total_steps}"
           f"（≈{total_steps/steps_per_epoch:.1f} epoch）")
 
@@ -115,9 +102,6 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
     if _pin is False:
         print("   ⚠️  pin_memory=False，H2D 拷贝无法与计算重叠，建议改为 True")
 
-    # MarginalEMATracker
-    marginal_tracker = MarginalEMATracker(true_marginals=model.true_marginals, momentum=0.99,).to(model.device)
-
     # 训练状态初始化
     history             = LossHistory()
     model.loss_history  = history
@@ -130,15 +114,8 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
 
     MIN_RELATIVE_IMPROVEMENT = 0.001
 
-    # ------------------------------------------------------------------
-    # patience 说明：这里的早停不再承担“精确判断泛化拐点”的职责——
-    # 没有验证集时它监控的是训练损失，本身就无法反映泛化情况；
-    # 过拟合/记忆问题交给训练后的评估协议（如 DCR）去把关。
-    # patience 的作用退化为一个粗粒度的“省算力”信号：
-    # 明显不再下降就提前停止，并顺手保留一个较优 checkpoint。
-    # 判断粒度天然与 eval_every 绑定，不做进一步解耦。
-    # ------------------------------------------------------------------
     patience_steps = train_cfg.patience
+    USE_EARLY_STOP = getattr(train_cfg, 'use_early_stop', True)
 
     print(f"\n⏳ 开始训练 (Total steps: {total_steps}, 每 {eval_every} step 验证/记录一次)...")
     if not ENABLE_NAN_CHECK:
@@ -152,72 +129,19 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
         print(f" Phase 1 (前{PHASE1_STEPS} steps): 冻结分类编码器，优先稳定数值表示")
 
     model._denoise_fn.train()
-    if marginal_tracker is not None:
-        marginal_tracker.train()
 
     train_iter = iter(train_dataloader)
 
     running_loss     = torch.zeros((), device=model.device)
     running_loss_num = torch.zeros((), device=model.device)
     running_loss_cat = torch.zeros((), device=model.device)
-    running_batches  = 0
-
-    if getattr(train_cfg, 'diagnose_compile', False):
-        batch_x, batch_y = next(iter(train_dataloader))
-        explanation = torch._dynamo.explain(model.compute_loss)(
-            batch_x, batch_y, marginal_tracker=marginal_tracker)
-        print(f"Graph Count: {len(explanation.graphs)}")
-        print(f"Graph Break Count: {len(explanation.break_reasons)}")
-        for i, br in enumerate(explanation.break_reasons):
-            print(f"[{i}] {br}")
-        return
-    
-
-    # ------------------------------------------------------------------
-    # Profiling 模式：跑几个 step 定位瓶颈，跑完直接 return，不进入正式训练
-    # ------------------------------------------------------------------
-    if getattr(train_cfg, 'profile_mode', False):
-        import torch.profiler as profiler
-        n_profile_steps = getattr(train_cfg, 'profile_steps', 20)
-
-        def _one_step():
-            nonlocal train_iter
-            try:
-                batch_x, batch_y = next(train_iter)
-            except StopIteration:
-                train_iter = iter(train_dataloader)
-                batch_x, batch_y = next(train_iter)
-            batch_x = batch_x.to(model.device, non_blocking=True)
-            batch_y = batch_y.to(model.device, non_blocking=True)
-            optimizer.zero_grad(set_to_none=True)
-            loss, _, _, _ = compiled_compute_loss(batch_x, batch_y, marginal_tracker=marginal_tracker)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model._denoise_fn.parameters(), 1.0)
-            optimizer.step()
-            scheduler.step()
-
-        # 先热身几步，避免 cuDNN 自动调优等一次性开销污染 20 步的采样结果
-        for _ in range(3):
-            _one_step()
-        torch.cuda.synchronize()
-
-        with profiler.profile(
-            activities=[profiler.ProfilerActivity.CPU, profiler.ProfilerActivity.CUDA],
-            record_shapes=True,
-        ) as prof:
-            for _ in range(n_profile_steps):
-                _one_step()
-                torch.cuda.synchronize()
-
-        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
-        return  # profiling 跑完直接结束，不进入正式训练循环
-    
+    running_batches  = 0    
 
     for step in range(1, total_steps + 1):
         if stop_training:
             break
 
-        # Phase 切换（可选）
+        # Phase 切换
         if in_phase1 and step == PHASE1_STEPS:
             for p in model._denoise_fn.parameters():
                 p.requires_grad_(True)
@@ -238,8 +162,8 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
         optimizer.zero_grad(set_to_none=True)
         amp_ctx = torch.autocast(device_type='cuda', dtype=torch.bfloat16) if ENABLE_AMP else nullcontext()
         with amp_ctx:
-            loss, loss_num, loss_cat, _ = compiled_compute_loss(
-                batch_x, batch_y, marginal_tracker=marginal_tracker)
+            loss, loss_num, loss_cat = compiled_compute_loss(
+                batch_x, batch_y)
 
         if ENABLE_NAN_CHECK:
             if not torch.isfinite(loss).item():
@@ -286,9 +210,6 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
         avg_val_loss = None
         if USE_VAL_MONITOR and val_dataloader is not None:
             model._denoise_fn.eval()
-            if marginal_tracker is not None:
-                marginal_tracker.eval()
-
             epoch_val_loss    = None
             val_valid_batches = 0
 
@@ -298,14 +219,12 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
                     batch_y_val = batch_y_val.to(model.device, non_blocking=True)
                     amp_ctx = torch.autocast(device_type='cuda', dtype=torch.bfloat16) if ENABLE_AMP else nullcontext()
                     with amp_ctx:
-                        val_loss, _, _, _ = compiled_compute_loss(
-                            batch_x_val, batch_y_val, marginal_tracker=marginal_tracker)
-
+                        val_loss, _, _ = compiled_compute_loss(
+                            batch_x_val, batch_y_val)
                     if ENABLE_NAN_CHECK:
                         if not torch.isfinite(val_loss).item():
                             print(f"跳过 NaN 或 Inf 验证批次 (Step {step})")
                             continue
-
                     if epoch_val_loss is None:
                         epoch_val_loss = val_loss.detach()
                     else:
@@ -318,11 +237,8 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
                 print(f"Warning: Step {step} 无有效验证批次。")
 
             model._denoise_fn.train()
-            if marginal_tracker is not None:
-                marginal_tracker.train()
 
         history.append(avg_train_loss, avg_train_num, avg_train_cat, avg_val_loss, step)
-
         raw_monitor = (avg_val_loss if (USE_VAL_MONITOR and avg_val_loss is not None) else avg_train_loss)
         ema_monitor_loss = (raw_monitor if ema_monitor_loss is None
             else EMA_ALPHA * raw_monitor + (1 - EMA_ALPHA) * ema_monitor_loss)
@@ -333,20 +249,16 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
         else:
             is_better_than_best = (
                 current_monitor_loss
-                < best_monitor_loss - MIN_RELATIVE_IMPROVEMENT * abs(best_monitor_loss)
-            )
+                < best_monitor_loss - MIN_RELATIVE_IMPROVEMENT * abs(best_monitor_loss))
 
         top_k_needs_update = (
-            len(top_k_states) < ENSEMBLE_K
-            or current_monitor_loss < top_k_states[-1][0]
-        )
+            len(top_k_states) < ENSEMBLE_K or current_monitor_loss < top_k_states[-1][0])
 
         current_state = None
         if top_k_needs_update or is_better_than_best:
             current_state = {
                 k: v.detach().cpu().clone()
-                for k, v in model._denoise_fn.state_dict().items()
-            }
+                for k, v in model._denoise_fn.state_dict().items()}
 
         if top_k_needs_update:
             top_k_states.append((current_monitor_loss, current_state))
@@ -381,7 +293,7 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
             )
             print(log_str)
 
-        if patience_counter >= patience_steps:
+        if USE_EARLY_STOP and patience_counter >= patience_steps:
             print(f"⏹️  Early stopping @ Step {step}  "
                   f"(最优: Step {best_monitor_step}, "
                   f"监控损失 {best_monitor_loss:.4f}, "
@@ -400,7 +312,7 @@ def train_loop(model, train_dataloader, val_dataloader, train_cfg) -> None:
             )
         model._denoise_fn.load_state_dict(avg_state)
         print(f"✅ 权重平均完成")
-    elif best_state is not None:
+    elif USE_EARLY_STOP and best_state is not None:
         model._denoise_fn.load_state_dict(best_state)
         print(f"🔁 已恢复 Step {best_monitor_step} 的最优权重")
 

@@ -23,35 +23,18 @@ def _encode_scale(
     *other_dfs: pd.DataFrame,
     cat_cols: list[str],
 ) -> list[np.ndarray]:
-    """
-    Encode and normalize multiple DataFrames consistently.
-
-    Steps:
-    1. LabelEncode each categorical column, fitted on ref_df.
-    2. Z-score normalize using ref_df mean/std as reference.
-
-    Returns a list of numpy arrays: [ref_encoded, *other_encoded].
-    Unknown categories in other_dfs are encoded as -1.
-    """
-    encoders: dict[str, LabelEncoder] = {}
-    for col in cat_cols:
-        le = LabelEncoder().fit(ref_df[col].astype(str))
-        encoders[col] = le
+    cats = {col: np.unique(ref_df[col].astype(str).to_numpy()) for col in cat_cols}  # 已排序，同 LabelEncoder.classes_
 
     arrays: list[np.ndarray] = []
     for df in (ref_df, *other_dfs):
         enc = df.copy().reset_index(drop=True)
         for col in cat_cols:
-            le = encoders[col]
-            enc[col] = (
-                df[col].astype(str).map(lambda v, _le = le: _le.transform([v])[0] 
-                                        if v in _le.classes_ else -1).to_numpy()
-            )
+            codes = pd.Categorical(df[col].astype(str).to_numpy(), categories=cats[col]).codes
+            enc[col] = codes.astype(float)          # 未见类别为 -1
         arrays.append(enc.values.astype(float))
 
     mu  = arrays[0].mean(axis=0)
     sig = arrays[0].std(axis=0) + 1e-8
-
     return [(a - mu) / sig for a in arrays]
 
 
@@ -113,32 +96,64 @@ def _eta_sq(num: np.ndarray, cat: np.ndarray) -> float:
 
 def _mixed_corr(df: pd.DataFrame, num_cols: list[str], cat_cols: list[str]) -> pd.DataFrame:
     """
-    Mixed-type association matrix.
-    num–num  : Spearman correlation
-    cat–cat  : Cramér's V
-    num–cat  : η² (eta-squared)
+    num–num: Spearman（秩的 Pearson 相关，一次矩阵运算）
+    cat–cat: bias-corrected Cramér's V（bincount 列联表）
+    num–cat: η²（bincount 分组求和）
     """
     all_cols = num_cols + cat_cols
-    n = len(all_cols)
-    C = np.zeros((n, n))
-    num_set = set(num_cols)
+    p, q = len(num_cols), len(cat_cols)
+    C = np.eye(len(all_cols))
 
-    for i, ci in enumerate(all_cols):
-        for j, cj in enumerate(all_cols):
-            if i == j:
-                C[i, j] = 1.0
-            elif j < i:
-                C[i, j] = C[j, i]
+    # ---- num–num ----
+    if p > 1:
+        X = df[num_cols].to_numpy(dtype=float)
+        const = X.std(axis=0) < 1e-8
+        R = df[num_cols].astype(float).rank(method='average').to_numpy()
+        S = np.nan_to_num(np.corrcoef(R, rowvar=False))
+        S[const, :] = 0.0
+        S[:, const] = 0.0
+        np.fill_diagonal(S, 1.0)
+        C[:p, :p] = S
+
+    # ---- 类别列：只编码一次 ----
+    codes, levels = [], []
+    for c in cat_cols:
+        cd, uniq = pd.factorize(df[c].to_numpy(), sort=False)
+        codes.append(cd.astype(np.int64))
+        levels.append(len(uniq))
+    n = len(df)
+
+    # ---- cat–cat ----
+    for i in range(q):
+        for j in range(i + 1, q):
+            r, k = levels[i], levels[j]
+            if n == 0 or r < 2 or k < 2:
+                v = 0.0
             else:
-                ai, aj = df[ci].values, df[cj].values
-                if ci in num_set and cj in num_set:
-                    C[i, j] = _spearman(ai.astype(float), aj.astype(float))
-                elif ci not in num_set and cj not in num_set:
-                    C[i, j] = _cramers_v(ai, aj)
-                else:
-                    num_a = ai.astype(float) if ci in num_set else aj.astype(float)
-                    cat_a = aj if ci in num_set else ai
-                    C[i, j] = _eta_sq(num_a, cat_a)
+                ct = np.bincount(codes[i] * k + codes[j], minlength=r * k).reshape(r, k).astype(float)
+                exp = np.outer(ct.sum(1), ct.sum(0)) / n
+                chi2 = ((ct - exp) ** 2 / exp).sum()
+                phi2 = max(0.0, chi2 / n - (r - 1) * (k - 1) / (n - 1))
+                r_c = r - (r - 1) ** 2 / (n - 1)
+                k_c = k - (k - 1) ** 2 / (n - 1)
+                denom = min(r_c - 1, k_c - 1)
+                v = float(np.sqrt(phi2 / denom)) if denom > 0 else 0.0
+            C[p + i, p + j] = C[p + j, p + i] = v
+
+    # ---- num–cat ----
+    for a in range(p):
+        x = df[num_cols[a]].to_numpy(dtype=float)
+        gm = x.mean()
+        sst = np.sum((x - gm) ** 2)
+        for i in range(q):
+            if sst <= 1e-10:
+                v = 0.0
+            else:
+                cnt = np.bincount(codes[i], minlength=levels[i]).astype(float)
+                sm = np.bincount(codes[i], weights=x, minlength=levels[i])
+                ssb = np.sum(cnt * (sm / cnt - gm) ** 2)
+                v = float(ssb / sst)
+            C[a, p + i] = C[p + i, a] = v
 
     return pd.DataFrame(C, index=all_cols, columns=all_cols)
 
@@ -240,7 +255,7 @@ def _score_clf(
     return out
 
 
-def compute_crps(train: pd.DataFrame, syn: pd.DataFrame, top_k: int = 10):
+def compute_crps_old(train: pd.DataFrame, syn: pd.DataFrame, top_k: int = 10):
     x_train = train.iloc[:, :-1]
     y_train = train.iloc[:, -1]
 
@@ -277,6 +292,38 @@ def compute_crps(train: pd.DataFrame, syn: pd.DataFrame, top_k: int = 10):
     return crps_F, crps_S
 
 
+def compute_crps(train, syn, top_k=10, cat_cols=()):
+    x_train, y_train = train.iloc[:, :-1], train.iloc[:, -1]
+    x_syn = syn.iloc[:, :-1]
+
+    clf = XGBClassifier(n_estimators=300, max_depth=5, learning_rate=0.05, random_state=42)
+    clf.fit(x_train, y_train)
+    top = list(x_train.columns[np.argsort(clf.feature_importances_)[::-1][:top_k]])
+
+    n = [c for c in top if c not in cat_cols]
+    c = [c for c in top if c in cat_cols]
+    corr_real = _mixed_corr(x_train, n, c).to_numpy()
+    corr_syn  = _mixed_corr(x_syn,  n, c).to_numpy()
+
+    fro_diff = np.linalg.norm(corr_real - corr_syn, ord='fro')
+    fro_real = np.linalg.norm(corr_real, ord='fro')
+    crps_F = 1 - fro_diff / (fro_real + 1e-8)
+
+    idx = np.triu_indices_from(corr_real, k=1)
+    r_real, r_syn = corr_real[idx], corr_syn[idx]
+    crps_S = spearmanr(r_real, r_syn).correlation if np.std(r_real) > 0 and np.std(r_syn) > 0 else float('nan')
+    return crps_F, crps_S
+
+
+def _shap_imp(sv):
+    if isinstance(sv, list):                 # 旧版 shap：每类一个数组
+        sv = np.stack(sv, axis=-1)           # (n, f, k)
+    imp = np.abs(sv).mean(axis=0)            # (f,) 或 (f, k)
+    if imp.ndim > 1:
+        imp = imp.mean(axis=-1)              # 对类别取平均 -> (f,)
+    return imp
+
+
 def compute_shap_preservation(train: pd.DataFrame, syn: pd.DataFrame):
     x_real = train.iloc[:, :-1]
     y_real = train.iloc[:, -1]
@@ -306,8 +353,11 @@ def compute_shap_preservation(train: pd.DataFrame, syn: pd.DataFrame):
     shap_real = explainer_real.shap_values(x_real)
     shap_syn = explainer_syn.shap_values(x_real)
 
-    imp_real = np.abs(shap_real).mean(axis=0)
-    imp_syn  = np.abs(shap_syn).mean(axis=0)
+    # imp_real = np.abs(shap_real).mean(axis=0)
+    # imp_syn  = np.abs(shap_syn).mean(axis=0)
+
+    imp_real = _shap_imp(shap_real)
+    imp_syn  = _shap_imp(shap_syn)
 
     shap_corr = spearmanr(imp_real, imp_syn).correlation
     cos = cosine_similarity(imp_real.reshape(1, -1), imp_syn.reshape(1, -1))[0,0]

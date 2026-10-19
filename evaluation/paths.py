@@ -9,14 +9,19 @@ from pathlib import Path
 import pandas as pd
 from utils.common import SEEDS
 
-PREFIX = 'full_data_fidelity_'
+PREFIX = 'full_data_'
 _TS = re.compile(r'(\d{4}_\d{6})$')
 SEED = SEEDS[0]
 
 
 def load_fold(ddpm_root, ds, fold, split_seed=SEED):
     d = Path(ddpm_root) / 'splits' / f'{ds}_seed{split_seed}_full_data_fold{fold}_imputed'
-    return pd.read_csv(d / 'real_train_imputed.csv'), pd.read_csv(d / 'real_test_imputed.csv')
+    tr = pd.read_csv(d / 'real_train_imputed.csv')
+    te = pd.read_csv(d / 'real_test_imputed.csv')
+    tr.columns = tr.columns.str.strip()
+    te.columns = te.columns.str.strip()
+    return tr, te
+    #return pd.read_csv(d / 'real_train_imputed.csv'), pd.read_csv(d / 'real_test_imputed.csv')
 
 
 def fake_path(root, method, ds, fold, sample=0) -> Path:

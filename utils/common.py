@@ -53,7 +53,7 @@ def resolve_dataset(token):
 
     name = str(token)
     if name in DATASETS:
-        print(f"✔ 已知数据集: {name}")
+        pass #print(f"✔ 已知数据集: {name}")
     else:
         print(f"⚠ '{name}' 不在 common.DATASETS 中，将作为新数据集尝试加载"
               f"（需要 data/{name}.csv 和 data/datasets_info.json 里有对应条目）")

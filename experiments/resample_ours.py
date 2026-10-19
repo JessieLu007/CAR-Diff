@@ -5,7 +5,7 @@ python -m experiments.resample_ours --dataset <ds> --hp h256_t200_3    # 指定 
 python -m experiments.resample_ours --dataset <ds> --device cuda
 不传 --dataset 则遍历 common.DATASETS；不传 --fold 则 0..4。
 """
-import os, sys, re, argparse
+import os, sys, ast, argparse
 from pathlib import Path
 
 _pre = argparse.ArgumentParser(add_help=False)
@@ -22,7 +22,7 @@ import numpy as np
 import torch
 import utils.common as common
 from experiments.model_runner import load_run, generate_samples
-from evaluation.paths import ddpm_runs
+from evaluation.paths import ddpm_runs, PREFIX
 
 if _pre_args.device == "cpu":
     assert not torch.cuda.is_available(), "仍检测到 GPU，环境变量未在 import torch 前生效"
@@ -36,23 +36,110 @@ def set_all_seed(seed: int):
     torch.manual_seed(seed)
 
 
-def resample_run(run_dir: Path, js, base_seed: int | None = None):
+def _fname(j: int) -> str:
+    return "synthetic_data.csv" if j == 0 else f"synthetic_data_s{j}.csv"
+
+
+def _read_info(out_dir: Path):
+    p, d = out_dir / "resample_info.txt", out_dir / "resample_device.txt"
+    if not (p.exists() and d.exists()):
+        return None
+    try:
+        info = dict(l.split("=", 1) for l in p.read_text().splitlines() if "=" in l)
+        info["js"] = ast.literal_eval(info["js"])
+        info["base_seed"] = int(info["base_seed"])
+        info["device"] = d.read_text().strip().split(":")[0]
+    except Exception:
+        return None
+    return info
+
+
+def _done_js(out_dir: Path, cat_input: str, device: str, base_seed: int | None):
+    """与本次参数一致且文件存在的已采样 j 集合；无 info 或参数不一致返回 None。
+    base_seed 为 None 时不比对该项。"""
+    info = _read_info(out_dir)
+    if info is None or info["cat_input"] != cat_input or info["device"] != device:
+        return None
+    if base_seed is not None and info["base_seed"] != base_seed:
+        return None
+    return {j for j in info["js"] if (out_dir / _fname(j)).exists()}
+
+
+def resample_run(run_dir: Path, js, base_seed: int | None = None,
+                 cat_input: str = "prob", out_dir: Path | None = None,
+                 force: bool = False, device: str = "cpu"):
+    out_dir = run_dir if out_dir is None else out_dir
+    js = list(js)
+
+    # 加载模型前的预检查：全部已采样则直接跳过
+    if not force:
+        done = _done_js(out_dir, cat_input, device, base_seed)
+        if done is not None and set(js) <= done:
+            print(f"⏭️ {run_dir.name} js={js} 均已采样且参数一致，跳过 ({out_dir.name})")
+            return
+
     bundle = load_run(str(run_dir))
     exp_cfg = bundle["exp_cfg"]
     assert exp_cfg.training.task == "full_data"
     base_seed = exp_cfg.pipeline.random_seed if base_seed is None else base_seed
     diffusion, processor = bundle["diffusion"], bundle["processor"]
+    diffusion.cat_input_zero = (cat_input == "zero")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    dev = str(diffusion.device).split(":")[0]
+    matched = _done_js(out_dir, cat_input, dev, base_seed)   # 用解析后的 base_seed 严格检查
+    done = matched if matched is not None else set()
+    if matched is None and _read_info(out_dir) is not None:
+        print(f"⚠️ {out_dir.name} 现有 resample_info 与本次参数不一致，将按本次参数重写；"
+              f"目录内不在 js={js} 中的旧 synthetic_data*.csv 不会被删除，与新 info 不匹配")
+    skip = set() if force else done
 
     for j in js:
+        if j in skip:
+            print(f"⏭️ {run_dir.name} j={j} 已采样，跳过 ({out_dir.name}/{_fname(j)})")
+            continue
+        set_all_seed(base_seed + j)
+        df_fake = generate_samples(
+            diffusion, processor, exp_cfg.sampling, exp_cfg.training.task,
+            None, bundle["target_dist"], bundle["target_col"], bundle["original_columns"],
+        )
+        df_fake.to_csv(out_dir / _fname(j), index=False)
+        print(f"✅ {run_dir.name} j={j} seed={base_seed + j} cat_input={cat_input} [{diffusion.device}] -> {out_dir.name}/{_fname(j)} ({len(df_fake)} 行)")
+
+    (out_dir / "resample_device.txt").write_text(str(diffusion.device))
+    (out_dir / "resample_info.txt").write_text(
+        f"src={run_dir.name}\ncat_input={cat_input}\nbase_seed={base_seed}\njs={sorted(done | set(js))}\n")
+
+
+def resample_run_old(run_dir: Path, js, base_seed: int | None = None,
+                 cat_input: str = "prob", out_dir: Path | None = None, 
+                 force: bool = False):
+    bundle = load_run(str(run_dir))
+    exp_cfg = bundle["exp_cfg"]
+    assert exp_cfg.training.task == "full_data"
+    base_seed = exp_cfg.pipeline.random_seed if base_seed is None else base_seed
+    diffusion, processor = bundle["diffusion"], bundle["processor"]
+    diffusion.cat_input_zero = (cat_input == "zero")
+    out_dir = run_dir if out_dir is None else out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for j in js:
+        fname = "synthetic_data.csv" if j == 0 else f"synthetic_data_s{j}.csv"
+        if (out_dir / fname).exists() and not force: 
+            print(f"⏭️ {run_dir.name} j={j} 已存在，跳过 ({out_dir.name}/{fname})")
+            continue
+        
         set_all_seed(base_seed + j)
         df_fake = generate_samples(
             diffusion, processor, exp_cfg.sampling, exp_cfg.training.task,
             None, bundle["target_dist"], bundle["target_col"], bundle["original_columns"],
         )
         fname = "synthetic_data.csv" if j == 0 else f"synthetic_data_s{j}.csv"
-        df_fake.to_csv(run_dir / fname, index=False)
-        print(f"✅ {run_dir.name} j={j} seed={base_seed + j} [{diffusion.device}] -> {fname} ({len(df_fake)} 行)")
-    (run_dir / "resample_device.txt").write_text(str(diffusion.device))
+        df_fake.to_csv(out_dir / fname, index=False)
+        print(f"✅ {run_dir.name} j={j} seed={base_seed + j} cat_input={cat_input} [{diffusion.device}] -> {out_dir.name}/{fname} ({len(df_fake)} 行)")
+    (out_dir / "resample_device.txt").write_text(str(diffusion.device))
+    (out_dir / "resample_info.txt").write_text(
+        f"src={run_dir.name}\ncat_input={cat_input}\nbase_seed={base_seed}\njs={list(js)}\n")
 
 
 def main():
@@ -64,7 +151,11 @@ def main():
     ap.add_argument("--seed", type=int, default=common.SEEDS[0], help="目录名中的 seed_<seed>")
     ap.add_argument("--js", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     ap.add_argument("--base_seed", type=int, default=None)
+    ap.add_argument("--cat_input", choices=["prob", "zero"], default="prob")
+    ap.add_argument("--suffix", default="", help="非空则写入新目录 full_data_<hp><suffix>_<ts>，不动原目录")
+    ap.add_argument("--force", action="store_true", help="已采样的 synthetic_data*.csv 也重新采样覆盖")
     ap.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
+    
     args = ap.parse_args()
 
     datasets = list(common.DATASETS) if args.dataset is None else [common.resolve_dataset(args.dataset)]
@@ -79,8 +170,8 @@ def main():
                 continue
             for ts, hp, d in runs:
                 print(f"采用最新的训练模型进行采样：{hp}_{ts}")
-                resample_run(d, args.js, args.base_seed)
-
+                out_dir = d.parent / f"{PREFIX}{hp}{args.suffix}_{ts}" if args.suffix else None
+                resample_run(d, args.js, args.base_seed, args.cat_input, out_dir, args.force, args.device)
 
 if __name__ == "__main__":
     main()

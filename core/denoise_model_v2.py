@@ -30,9 +30,15 @@ class TabMLPDenoise(nn.Module):
         # 每个数值列扩展为多少个 Token（few_num_mode 生效时）
         share_decoder: bool = True,  # 新增：解码器是否共享展开层，与 v1 对齐
         use_time_gate: bool = True,
+        cat_input_mode: str = 'legacy',
+        use_num_from_cat: bool = True,
+        use_cat_from_num: bool = True,
+        use_cat_self_attn: bool = True,
+        use_cat_tokens: bool = True,
     ):
         super().__init__()
-
+        self.use_cat_tokens = use_cat_tokens
+        self.cat_input_mode= cat_input_mode
         self.task          = task
         self.dim_t         = dim_t
         self.num_numerical = info['num_numerical']
@@ -82,7 +88,7 @@ class TabMLPDenoise(nn.Module):
             self.num_col_encoders = None
 
         self.cat_dropout = nn.Dropout(0.2)
-        if len(self.num_classes) > 0:
+        if len(self.num_classes) > 0 and use_cat_tokens:
             self.cat_embed_layers = nn.ModuleList([
                 nn.Embedding(c, min(16, c * 4)) for c in self.num_classes
             ])
@@ -99,7 +105,8 @@ class TabMLPDenoise(nn.Module):
             self.cat_col_projs    = None
 
         # ── 2. 可学习门控尺度 ────────────────────────────────────────────
-        if self.num_numerical > 0 and len(self.num_classes) > 0:
+        #if self.num_numerical > 0 and len(self.num_classes) > 0:
+        if self.num_numerical > 0 and len(self.num_classes) > 0 and use_num_from_cat and use_cat_tokens:
             self.gate_layer = nn.Linear(dim_hidden, dim_hidden)
             nn.init.xavier_uniform_(self.gate_layer.weight)
             nn.init.constant_(self.gate_layer.bias, -1.0)
@@ -119,14 +126,15 @@ class TabMLPDenoise(nn.Module):
         self.col_type_emb = ColumnTypeEmbedding(dim_hidden)
 
         # ── 4. Cross-Attention（并行双向）───────────────────────────────
-        # cross_attn 前保存 num_seq 快照，reverse_cross_attn 用该快照作为 KV,
-        # 确保 cat ← num 方向读到的是真实数值信号，而非 num 已经融合过 cat 之后的折射结果。
-        if self.num_numerical > 0 and len(self.num_classes) > 0:
-            self.cross_attn         = CrossAttentionBlock(dim_hidden, nhead_cross, dropout)
-            if not self.few_num_mode:
-                self.reverse_cross_attn = CrossAttentionBlock(dim_hidden, nhead_cross, dropout)
-            else:
-                self.reverse_cross_attn = None
+        if self.num_numerical > 0 and len(self.num_classes) > 0 and use_cat_tokens:
+            self.cross_attn = (
+                CrossAttentionBlock(dim_hidden, nhead_cross, dropout)
+                if use_num_from_cat else None
+            )
+            self.reverse_cross_attn = (
+                CrossAttentionBlock(dim_hidden, nhead_cross, dropout)
+                if (use_cat_from_num and not self.few_num_mode) else None
+            )
         else:
             self.cross_attn         = None
             self.reverse_cross_attn = None
@@ -147,7 +155,7 @@ class TabMLPDenoise(nn.Module):
         else:
             self.num_transformer = None
 
-        if len(self.num_classes) > 1:
+        if len(self.num_classes) > 1 and use_cat_self_attn and use_cat_tokens:
             self.cat_transformer = nn.TransformerEncoderLayer(
                 d_model=dim_hidden, nhead=nhead_col,
                 dim_feedforward=dim_hidden * 2, dropout=dropout,
@@ -160,13 +168,16 @@ class TabMLPDenoise(nn.Module):
         # cls_num 专门聚合 num_seq，cls_cat 专门聚合 cat_seq，拼接后经
         # proj_fuse 得到 h_shared —— 避免 N_cat >> N_num 时数值信息被稀释。
         self.cls_num = nn.Parameter(torch.randn(1, 1, dim_hidden) * 0.02)
-        self.cls_cat = nn.Parameter(torch.randn(1, 1, dim_hidden) * 0.02)
+        if use_cat_tokens:
+            self.cls_cat = nn.Parameter(torch.randn(1, 1, dim_hidden) * 0.02)
         self.pool_num_attn  = nn.MultiheadAttention(dim_hidden, nhead_col, dropout=dropout, batch_first=True)
-        self.pool_cat_attn  = nn.MultiheadAttention(dim_hidden, nhead_col, dropout=dropout, batch_first=True)
+        if use_cat_tokens:
+            self.pool_cat_attn  = nn.MultiheadAttention(dim_hidden, nhead_col, dropout=dropout, batch_first=True)
         self.pool_norm_num_q  = nn.LayerNorm(dim_hidden)
         self.pool_norm_num_kv = nn.LayerNorm(dim_hidden)
-        self.pool_norm_cat_q  = nn.LayerNorm(dim_hidden)
-        self.pool_norm_cat_kv = nn.LayerNorm(dim_hidden)
+        if use_cat_tokens:
+            self.pool_norm_cat_q  = nn.LayerNorm(dim_hidden)
+            self.pool_norm_cat_kv = nn.LayerNorm(dim_hidden)
 
         # ── 7. 条件编码 ──────────────────────────────────────────────────
         self.time_embed = nn.Sequential(
@@ -177,15 +188,16 @@ class TabMLPDenoise(nn.Module):
         self.label_emb = nn.Embedding(num_classes_cond + 1, dim_t)
 
         # Cross-Attention 时间步门控生成器（只在同时有数值和类别列时才需要）
-        if self.num_numerical > 0 and len(self.num_classes) > 0:
+        if self.num_numerical > 0 and len(self.num_classes) > 0 and use_cat_tokens:
             self.cross_attn_gate = nn.Linear(dim_t, 1)
             nn.init.constant_(self.cross_attn_gate.bias, -2.0) # 初始sigmoid约为0.12， 温和开启
         else:
             self.cross_attn_gate = None
 
-        # ── 8. 聚合投影（dim_hidden*2 → dim_hidden，适配双路 CLS 拼接）─
+        # ── 8. proj_fuse：输入维度随 use_cat_tokens 变化
+        fuse_in = dim_hidden * 2 if use_cat_tokens else dim_hidden
         self.proj_fuse = nn.Sequential(
-            nn.Linear(dim_hidden * 2, dim_hidden),
+            nn.Linear(fuse_in, dim_hidden),
             nn.SiLU(),
             nn.LayerNorm(dim_hidden),
         )
@@ -311,7 +323,10 @@ class TabMLPDenoise(nn.Module):
 
         # ── 拆分输入 ─────────────────────────────────────────────────────
         x_num      = x_in[:, :self.num_numerical]             # [B, N_num]
-        x_cat_prob = x_in[:, self.num_numerical:].long()
+        #x_cat_prob = x_in[:, self.num_numerical:].long()
+        x_cat_in   = x_in[:, self.num_numerical:]
+        x_cat_prob = x_cat_in.long() if self.cat_input_mode == 'legacy' else x_cat_in
+        
 
         # ── 逐列 Token 化 ────────────────────────────────────────────────
         num_tokens = self._encode_num_tokens(x_num)
@@ -363,21 +378,23 @@ class TabMLPDenoise(nn.Module):
         # 并行修复：cross_attn 前保存 num_seq 快照（num_seq_pre），
         # reverse_cross_attn 用该快照作为 KV，确保两个方向均读取对方
         # cross-attn 之前的序列，消除 cat 信息折射。
-        if self.cross_attn is not None and num_seq.shape[1] > 0 and cat_seq.shape[1] > 0:
-            h_cat_mean = cat_seq.mean(dim=1)
-            gamma_beta = self.cat_to_num(h_cat_mean)
-            gamma, beta = gamma_beta.chunk(2, dim=-1)
-            gate        = torch.sigmoid(self.gate_layer(h_cat_mean))
-            scale_coef  = torch.tanh(self.gate_scale)
+        has_both = num_seq.shape[1] > 0 and cat_seq.shape[1] > 0
+        if has_both and (self.cross_attn is not None or self.reverse_cross_attn is not None):
+            num_seq_pre = num_seq
+            if self.cross_attn is not None:
+                h_cat_mean = cat_seq.mean(dim=1)
+                gamma_beta = self.cat_to_num(h_cat_mean)
+                gamma, beta = gamma_beta.chunk(2, dim=-1)
+                gate        = torch.sigmoid(self.gate_layer(h_cat_mean))
+                scale_coef  = torch.tanh(self.gate_scale)
 
-            num_seq = num_seq + scale_coef * gate.unsqueeze(1) * (
-                num_seq * gamma.unsqueeze(1) + beta.unsqueeze(1)
-            )
-
-            num_seq_pre = num_seq   # ← 保存快照：cross_attn 之前的 num_seq
-            num_seq = self.cross_attn(num_seq, cat_seq, gate=lambda_t)               # num ← cat（原始）
-            if not self.few_num_mode:
-                cat_seq = self.reverse_cross_attn(cat_seq, num_seq_pre, gate=lambda_t)   # cat ← 原始 num！
+                num_seq = num_seq + scale_coef * gate.unsqueeze(1) * (
+                    num_seq * gamma.unsqueeze(1) + beta.unsqueeze(1)
+                )
+                num_seq_pre = num_seq                                            # 快照：cross_attn 之前
+                num_seq = self.cross_attn(num_seq, cat_seq, gate=lambda_t)       # num ← cat
+            if self.reverse_cross_attn is not None:
+                cat_seq = self.reverse_cross_attn(cat_seq, num_seq_pre, gate=lambda_t)   # cat ← 原始 num
 
         # ── 阶段2b：NumToCatFiLM（仅 few_num_mode）─────────────────────
         if self.num_to_cat_film is not None and num_seq.shape[1] > 0:
@@ -398,9 +415,15 @@ class TabMLPDenoise(nn.Module):
             h_cat_pool, _ = self.pool_cat_attn(q_cat, kv_cat, kv_cat)
             h_cat_pool = (self.cls_cat.expand(B, -1, -1) + h_cat_pool).squeeze(1)  # [B,D]
         else:
-            h_cat_pool = torch.zeros(B, self.cls_cat.shape[-1], device=x_in.device)
+            #h_cat_pool = torch.zeros(B, self.cls_cat.shape[-1], device=x_in.device)
+            h_cat_pool = torch.zeros(B, self.cls_num.shape[-1], device=x_in.device)
+            
 
-        h_shared = self.proj_fuse(torch.cat([h_num_pool, h_cat_pool], dim=-1))  # [B,D]
+        #h_shared = self.proj_fuse(torch.cat([h_num_pool, h_cat_pool], dim=-1))  # [B,D]
+        if self.use_cat_tokens:
+            h_shared = self.proj_fuse(torch.cat([h_num_pool, h_cat_pool], dim=-1))
+        else:
+            h_shared = self.proj_fuse(h_num_pool)
 
         # ── 双专属主干 → （可选共享解码器）→ 输出头 ──────────────────────
         out_n = torch.empty((B, 0), device=x_in.device)

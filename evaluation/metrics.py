@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
+import time
 from typing import Any, Literal, Optional
 import warnings
 
@@ -11,7 +12,7 @@ from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
-from evaluation.utils import _corr_diff, _encode_scale, _kendall_mat, _tvd_cat, _tvd_cont, compute_crps, compute_shap_preservation, _score_clf
+from evaluation.utils import _corr_diff, _encode_scale, _kendall_mat, _mixed_corr, _tvd_cat, _tvd_cont, compute_crps, compute_shap_preservation, _score_clf
 
 try:
     from xgboost import XGBClassifier
@@ -120,33 +121,42 @@ def metric_tvd(
     return result
 
 
-def metric_corr_diff(
-    ref_df:  pd.DataFrame,
-    fake_df:  pd.DataFrame,
-    num_cols: list[str],
-    cat_cols: list[str],
-    config:   EvalConfig,
-    **kwargs,
-) -> dict:
-    """
-    Mixed-type correlation matrix difference.
+_REF_CORR = {}
 
-    Comparison : fake_df vs ref_df
-    Mode       : controls full vs minority subset
-    Outputs    : corr_diff_mean (avg absolute diff), corr_diff_fro (Frobenius norm)
-    Interpretation : lower is better; captures pairwise dependency structure gaps
-    """
+def metric_corr_diff(ref_df, fake_df, num_cols, cat_cols, config, **kwargs) -> dict:
     mode = config.get_mode('corr_diff')
     ref  = _subset(ref_df, mode, config)
     fake = _subset(fake_df, mode, config)
     n_cols, c_cols = _active_cols(num_cols, cat_cols, mode, config)
-
     if len(n_cols) + len(c_cols) < 2:
         warnings.warn("corr_diff: fewer than 2 active feature columns, skipping.")
         return {'corr_diff_mean': float('nan'), 'corr_diff_fro': float('nan')}
+    key = (id(ref_df), mode, tuple(n_cols), tuple(c_cols))
+    if key not in _REF_CORR:
+        _REF_CORR[key] = _mixed_corr(ref, n_cols, c_cols)
+    C_ref  = _REF_CORR[key]
+    C_fake = _mixed_corr(fake, n_cols, c_cols)
 
-    mean_d, fro_d = _corr_diff(ref, fake, n_cols, c_cols)
-    return {'corr_diff_mean': mean_d, 'corr_diff_fro': fro_d}
+    diff = (C_ref - C_fake).abs().values
+    p = len(n_cols)
+    mask = np.triu(np.ones(diff.shape, dtype=bool), k=1)
+
+    def _upper(m):
+        return m[np.triu_indices(m.shape[0], k=1)]
+
+    def _mean(v):
+        return float(np.mean(v)) if np.size(v) else float('nan')
+
+    return {'corr_diff_mean': float(diff[mask].mean()),
+            'corr_diff_fro':  float(np.linalg.norm(diff)),
+            'corr_diff_nn':   _mean(_upper(diff[:p, :p])),
+            'corr_diff_nc':   _mean(diff[:p, p:]),
+            'corr_diff_cc':   _mean(_upper(diff[p:, p:]))}
+    
+    diff = (C_ref - C_fake).abs()
+    mask = np.triu(np.ones(diff.shape, dtype=bool), k=1)
+    return {'corr_diff_mean': float(diff.values[mask].mean()),
+            'corr_diff_fro':  float(np.linalg.norm(diff.values))}
 
 
 def metric_c2st(
@@ -272,18 +282,65 @@ def _matrix(real, fake, num_cols, cat_cols):
     return X.loc['r'].to_numpy(), X.loc['f'].to_numpy()
 
 
+import torch
+
+def _dev():
+    return 'cuda' if torch.cuda.is_available() else 'cpu'
+
+_MM = 'donot_use_mm_for_euclid_dist'   # 精确距离，避免矩阵乘法带来的数值误差
+
+def _kth_nn_dist(X, k, bs=2048):
+    """X 内每点到其第 k 近邻的距离（排除自身），与 prdc 包定义一致"""
+    Xt = torch.as_tensor(X, dtype=torch.float32, device=_dev())
+    out = []
+    for i in range(0, len(Xt), bs):
+        d = torch.cdist(Xt[i:i+bs], Xt, compute_mode=_MM)
+        out.append(d.topk(k + 1, dim=1, largest=False).values[:, -1])
+    return torch.cat(out)
+
+def _prdc_gpu(xr, xf, k, bs=2048):
+    dev = _dev()
+    R = torch.as_tensor(xr, dtype=torch.float32, device=dev)
+    F = torch.as_tensor(xf, dtype=torch.float32, device=dev)
+    r_nn, f_nn = _kth_nn_dist(xr, k, bs), _kth_nn_dist(xf, k, bs)
+    prec_hit = torch.zeros(len(F), dtype=torch.bool, device=dev)
+    dens_cnt = torch.zeros(len(F), device=dev)
+    rec_hit = cov_hit = 0
+    for i in range(0, len(R), bs):
+        d = torch.cdist(R[i:i+bs], F, compute_mode=_MM)      # (b, n_fake)
+        inside = d < r_nn[i:i+bs, None]
+        prec_hit |= inside.any(0)
+        dens_cnt += inside.sum(0)
+        rec_hit += (d < f_nn[None, :]).any(1).sum().item()
+        cov_hit += (d.min(1).values < r_nn[i:i+bs]).sum().item()
+    return dict(precision=prec_hit.float().mean().item(),
+                recall=rec_hit / len(R),
+                density=(dens_cnt.mean() / k).item(),
+                coverage=cov_hit / len(R))
+
+def _min_dist(Q, X, bs=1024):
+    """Q 中每行到 X 的最近距离（等价于 NearestNeighbors(n_neighbors=1)）"""
+    Xt = torch.as_tensor(np.asarray(X), dtype=torch.float32, device=_dev())
+    out = []
+    for i in range(0, len(Q), bs):
+        q = torch.as_tensor(np.asarray(Q[i:i+bs]), dtype=torch.float32, device=_dev())
+        out.append(torch.cdist(q, Xt, compute_mode=_MM).min(1).values.cpu())
+    return torch.cat(out).numpy().astype(np.float64)
+
 def metric_prdc(ref_df, fake_df, num_cols, cat_cols, config, k: int = 5, **kw) -> dict:
-    from prdc import compute_prdc
+    #from prdc import compute_prdc
     n, c = _active_cols(num_cols, cat_cols, config.get_mode('prdc'), config)
     xr, xf = _matrix(ref_df, fake_df, n, c)
+
     names = ('precision', 'recall', 'density', 'coverage')
     if min(len(xr), len(xf)) <= k:
         return {f'prdc_{x}': float('nan') for x in names}
-    r = compute_prdc(real_features=xr, fake_features=xf, nearest_k=k)
+    #r = compute_prdc(real_features=xr, fake_features=xf, nearest_k=k)
+    r = _prdc_gpu(xr, xf, k)
     return {f'prdc_{x}': float(r[x]) for x in names}
 
 
-def metric_dep(ref_df, fake_df, num_cols, cat_cols, config,
+def metric_dep_old(ref_df, fake_df, num_cols, cat_cols, config,
                threshold: float = 0.5, tolerance: float = 0.1, **kw) -> dict:
     cols, _ = _active_cols(num_cols, cat_cols, config.get_mode('dep'), config)
     iu = np.triu_indices(len(cols), k=1)
@@ -303,6 +360,83 @@ def metric_dep(ref_df, fake_df, num_cols, cat_cols, config,
         'dep_direction_rate': float((np.sign(r[m]) == np.sign(f[m])).mean()),
     }
 
+def metric_dep(ref_df, fake_df, num_cols, cat_cols, config,
+               threshold: float = 0.3, tolerance: float = 0.1, **kw) -> dict:
+    n, c = _active_cols(num_cols, cat_cols, config.get_mode('dep'), config)
+    cols = n + c
+    iu = np.triu_indices(len(cols), k=1)
+    r = _mixed_corr(ref_df,  n, c).to_numpy()[iu]
+    f = _mixed_corr(fake_df, n, c).to_numpy()[iu]
+    nan = float('nan')
+    m = np.abs(r) >= threshold
+    if not m.any():
+        return {'dep_n_pairs': 0, 'dep_err_mean': nan, 'dep_err_median': nan,
+                'dep_preserve_rate': nan, 'dep_direction_rate': nan}
+    err = np.abs(r[m] - f[m])
+    out = {'dep_n_pairs': int(m.sum()),
+           'dep_err_mean': float(err.mean()),
+           'dep_err_median': float(np.median(err)),
+           'dep_preserve_rate': float((err <= tolerance).mean())}
+    # 方向只对"有符号"的 num–num 对有意义
+    nn = np.zeros(len(cols), dtype=bool); nn[:len(n)] = True
+    both_num = (nn[iu[0]] & nn[iu[1]])[m]
+    out['dep_direction_rate'] = (float((np.sign(r[m][both_num]) == np.sign(f[m][both_num])).mean())
+                                 if both_num.any() else nan)
+    return out
+
+
+def _alpha_beta_naive_gpu(xr, xf, bs=2048, return_curve=False):
+    dev = _dev()
+    xr = np.asarray(xr, dtype=np.float64); xf = np.asarray(xf, dtype=np.float64)
+    mn = xr.min(0); rg = xr.max(0) - mn; rg[rg == 0] = 1.0   # 同 MinMaxScaler 对常数列的处理
+    X, S = (xr - mn) / rg, (xf - mn) / rg
+    Xt = torch.as_tensor(X, dtype=torch.float32, device=dev)
+    St = torch.as_tensor(S, dtype=torch.float32, device=dev)
+    r2r, r2s, arg = [], [], []
+    for i in range(0, len(Xt), bs):
+        a = Xt[i:i+bs]
+        r2r.append(torch.cdist(a, Xt, compute_mode=_MM).topk(2, dim=1, largest=False).values[:, 1])
+        v, ix = torch.cdist(a, St, compute_mode=_MM).min(1)
+        r2s.append(v); arg.append(ix)
+    r2r = torch.cat(r2r).cpu().numpy().astype(np.float64)
+    r2s = torch.cat(r2s).cpu().numpy().astype(np.float64)
+    arg = torch.cat(arg).cpu().numpy()
+
+    alphas = np.linspace(0, 1, 30)
+    emb = X.mean(0)
+    Radii = np.quantile(np.sqrt(((X - emb) ** 2).sum(1)), alphas)
+    sc = S.mean(0)
+    s2c = np.sqrt(((S - emb) ** 2).sum(1))
+    cd = np.sqrt(((S[arg] - sc) ** 2).sum(1))
+    cR = np.quantile(cd, alphas)
+    ap = np.array([(s2c <= R).mean() for R in Radii])
+    near = r2s <= r2r
+    bc = np.array([(near & (cd <= R)).mean() for R in cR])
+    dp = 1 - np.abs(alphas - ap).sum() / alphas.sum()
+    db = 1 - np.abs(alphas - bc).sum() / alphas.sum()
+    if return_curve:
+        return float(dp), float(db), ap, alphas
+    return float(dp), float(db)
+
+
+def alpha_diag(ref_df, fake_df, num_cols, cat_cols, random_state=42):
+    """signed = ap - alpha：>0 合成样本更集中，<0 更分散；lo/mid/hi 为 alpha 的前/中/后三分之一"""
+    rng = np.random.default_rng(random_state)
+    out = {}
+    for name, (n, c) in {'all': (num_cols, cat_cols), 'num_only': (num_cols, []),
+                         'cat_only': ([], cat_cols)}.items():
+        if not (n or c):
+            continue
+        xr, xf = _matrix(ref_df, fake_df, n, c)
+        m = min(len(xr), len(xf))
+        if len(xr) > m: xr = xr[rng.choice(len(xr), m, replace=False)]
+        if len(xf) > m: xf = xf[rng.choice(len(xf), m, replace=False)]
+        dp, _, ap, al = _alpha_beta_naive_gpu(xr, xf, return_curve=True)
+        s = ap - al
+        out[name] = dict(alpha_precision=dp, signed_mean=s.mean(),
+                         lo=s[:10].mean(), mid=s[10:20].mean(), hi=s[20:].mean())
+    return pd.DataFrame(out).T.round(4)
+
 
 def metric_alpha_beta(ref_df, fake_df, num_cols, cat_cols, config,
                       random_state: int = 42, **kw) -> dict:
@@ -317,6 +451,9 @@ def metric_alpha_beta(ref_df, fake_df, num_cols, cat_cols, config,
         xr = xr[rng.choice(len(xr), m, replace=False)]
     if len(xf) > m:
         xf = xf[rng.choice(len(xf), m, replace=False)]
+
+    dp, db = _alpha_beta_naive_gpu(xr, xf)
+    return {'alpha_precision': dp, 'beta_recall': db}
 
     res = AlphaPrecision().evaluate(GenericDataLoader(pd.DataFrame(xr).add_prefix('f')),
                                     GenericDataLoader(pd.DataFrame(xf).add_prefix('f')))
@@ -362,7 +499,7 @@ def metric_crps(ref_df, fake_df, num_cols, cat_cols, config: EvalConfig,
         warnings.warn("crps: ref_df needs >=2 classes and >=3 features "
                       "(pre_filtered ref_df is single-class), skipping.")
         return dict(_NAN_CRPS)
-    F, S = compute_crps(tr, fk, top_k=min(top_k, tr.shape[1] - 1))
+    F, S = compute_crps(tr, fk, top_k=min(top_k, tr.shape[1] - 1), cat_cols=[c for c in cat_cols if c != config.minority_col])
     return {'crps_F': float(F), 'crps_S': float(S)}
 
 
@@ -391,7 +528,7 @@ def metric_dcr(
     num_cols:     list[str],
     cat_cols:     list[str],
     config:       EvalConfig,
-    max_samples:  int = 2000,
+    max_samples:  int | None = None,
     random_state: int = 42,
     **kwargs,
 ) -> dict:
@@ -404,16 +541,26 @@ def metric_dcr(
     all_feat = n_cols + c_cols
 
     # normalize using train as reference (consistent scale across all sets)
+    t = time.time()
     X_train, X_test, X_fake = _encode_scale(
         train[all_feat], test[all_feat], fake[all_feat], cat_cols=c_cols
     )
+    print('  encode', time.time() - t, X_train.shape, flush=True)
 
-    rng = np.random.default_rng(random_state)
-    idx = rng.choice(len(X_fake), min(max_samples, len(X_fake)), replace=False)
-    X_s = X_fake[idx]
+    # rng = np.random.default_rng(random_state)
+    # idx = rng.choice(len(X_fake), min(max_samples, len(X_fake)), replace=False)
+    # X_s = X_fake[idx]
 
-    dcr_train = NearestNeighbors(n_neighbors=1).fit(X_train).kneighbors(X_s)[0][:, 0]
-    dcr_test  = NearestNeighbors(n_neighbors=1).fit(X_test).kneighbors(X_s)[0][:, 0]
+    if max_samples is None or max_samples >= len(X_fake):
+        X_s = X_fake
+    else:
+        rng = np.random.default_rng(random_state)
+        X_s = X_fake[rng.choice(len(X_fake), max_samples, replace=False)]
+
+    # dcr_train = NearestNeighbors(n_neighbors=1).fit(X_train).kneighbors(X_s)[0][:, 0]
+    # dcr_test  = NearestNeighbors(n_neighbors=1).fit(X_test).kneighbors(X_s)[0][:, 0]
+    dcr_train = _min_dist(X_s, X_train)
+    dcr_test  = _min_dist(X_s, X_test)
 
     ks_stat, ks_pval = stats.ks_2samp(dcr_train, dcr_test)
 

@@ -1,13 +1,4 @@
 # 文件位置: experiments/run_cv.py
-"""
-用法：
-    python run_cv.py                    # 跑 DATASET_NAME 的全部 N_FOLDS 折
-    python run_cv.py --fold 2           # 只跑第 2 折（0-based），调参时先测一折，快
-    python run_cv.py --dataset ckd      # 换数据集，不用改代码
-
-改超参数只需要改下面【常改】那一块，改完直接跑，不用传一堆命令行参数。
---dataset / --fold 是留给"批量跑几个数据集/几折"这种脚本化场景的，平时手动跑可以不传。
-"""
 import os, sys, platform
 sys.path.append("..")
 
@@ -50,36 +41,35 @@ MODEL_OVERRIDES = dict(
     dim_hidden=256,
     num_timesteps=200,
     prediction_type="eps",
-    focal_mode="off",              # "off" | "fixed" | "adaptive"
-    use_marginal_align=False,
-    logit_adj_tau=0,
-    gamma_base=1,
-    focal_alpha_scale=1.1,
-    gma_loss_weight=0.00,
-    corr_weight=0.05, #0.05
-    corr_t_ratio=0.5,
-    posterior_switch_ratio=1.0,
-    cat_temperature_cap=1,
-    x0_clamp_min=-4,
-    x0_clamp_max=4,
+    corr_t_ratio=0.5,  
+    use_num_from_cat=False,
+    use_cat_from_num=False,
+    use_cat_self_attn=False,
+    use_cat_tokens=False,
 )
 TRAINING_OVERRIDES = dict(
-    task="full_data",              # "full_data" | "minority_uncond" | "minority_cond"
-    objective="fidelity",
     batch_size=64,
-    target_epochs=100,             # 不用验证集，靠固定步数 + weight decay/dropout 控过拟合
+    target_epochs=200,             # 不用验证集，靠固定步数 + weight decay/dropout 控过拟合
+    enable_compile=True,
     lr=1e-3,
-    uncond_p=0.1,
-    enable_amp=True,
-    diagnose_compile=False,
-    profile_mode=False,
-    profile_steps=20,
+    step_floor=0,
+    use_early_stop=False,
 )
 SAMPLING_OVERRIDES = dict(
-    temperature_fidelity=1,
     num_samples=None,
 )
 # ==============================================================================
+
+def parse_kv(s: str) -> dict:
+    import ast
+    out = {}
+    for item in filter(None, (s or "").split(",")):
+        k, v = item.split("=", 1)
+        try:
+            out[k.strip()] = ast.literal_eval(v.strip())
+        except (ValueError, SyntaxError):
+            out[k.strip()] = v.strip()
+    return out
 
 
 def set_seed(seed: int = 42):
@@ -91,17 +81,19 @@ def set_seed(seed: int = 42):
     torch.backends.cudnn.benchmark = False
 
 
-def build_config():
+def build_config(tag: str = "", step_floor=None, model_kv=None, train_kv=None):
     from configs.experiment_configs import TrainingConfig
     import dataclasses
     print("TrainingConfig file:", TrainingConfig.__module__)
-    print("fields:", [f.name for f in dataclasses.fields(TrainingConfig)])
     base_cfg = make_default_experiment_config()
+    training = {**TRAINING_OVERRIDES, **(train_kv or {})}
+    if step_floor is not None:
+        training["step_floor"] = step_floor
     return base_cfg.with_overrides(
         data=DATA_OVERRIDES,
-        pipeline={"random_seed": SEED},
-        model=MODEL_OVERRIDES,
-        training=TRAINING_OVERRIDES,
+        pipeline={"random_seed": SEED, "tag": tag},
+        model={**MODEL_OVERRIDES, **(model_kv or {})},
+        training=training,
         sampling=SAMPLING_OVERRIDES,
     )
 
@@ -151,32 +143,40 @@ def run_one_fold(dataset_name, fold_idx, df_all, target_col, num_col_idx, cat_co
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", default=str(DATASET_NAME), help="数据集名称或索引，不传则用上面 DATASET_NAME")
-    parser.add_argument("--fold", type=int, default=None, help="只跑指定一折(0-based)；不传则跑全部 N_FOLDS 折")
+    parser.add_argument("--dataset", nargs="+", default=None, help="数据集名称或索引，不传则用上面 DATASET_NAME")
+    parser.add_argument("--fold", type=int, nargs='*', default=None, help="0-based，可传多个：--fold 0 1 2；不传则 0..n_folds-1")
+    parser.add_argument("--n_folds", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42, help="设置环境变量随机种子")
     parser.add_argument("--all", action="store_true", 
                         help="依次跑 common.DATASETS 中所有数据集的 N_FOLDS 折划分；传了此参数时 --dataset 被忽略")
+    parser.add_argument("--step_floor", type=int, default=None, help="步数下限 S_min")
+    parser.add_argument("--tag", default="", help="运行标签（仅字母数字下划线），写入结果文件夹名")
+    parser.add_argument("--model", default="", help='覆盖 MODEL_OVERRIDES')
+    parser.add_argument("--train", default="", help='覆盖 TRAINING_OVERRIDES，如 "target_epochs=200"')
     args = parser.parse_args()
 
-    dataset_name = common.resolve_dataset(args.dataset)
-    print(f"▶ dataset = {dataset_name} (来自 --dataset {args.dataset})")
+    if args.dataset is None:
+        dataset_names = list(common.DATASETS)
+    else:
+        dataset_names = [common.resolve_dataset(d) for d in args.dataset]
+    print(f"▶ datasets = {dataset_names}")
 
     set_seed(args.seed)
 
-    if args.all:
-        dataset_names = list(common.DATASETS)
-        print(f"▶ --all 模式，共 {len(dataset_names)} 个数据集: {dataset_names}")
-    else:
-        dataset_names = [common.resolve_dataset(args.dataset)]
-        print(f"▶ dataset = {dataset_names[0]} (来自 --dataset {args.dataset})")
+    # if args.all:
+    #     dataset_names = list(common.DATASETS)
+    #     print(f"▶ --all 模式，共 {len(dataset_names)} 个数据集: {dataset_names}")
+    # else:
+    #     dataset_names = [common.resolve_dataset(args.dataset)]
+    #     print(f"▶ dataset = {dataset_names[0]} (来自 --dataset {args.dataset})")
 
     all_results = {}
 
     for dataset_name in dataset_names:
         df_all, target_col, num_col_idx, cat_col_idx, minority_class = load_data(dataset_name)
-        exp_cfg = build_config()
+        exp_cfg = build_config(args.tag, args.step_floor, parse_kv(args.model), parse_kv(args.train))
 
-        folds = [args.fold] if args.fold is not None else range(N_FOLDS)
+        folds = args.fold if args.fold else list(range(args.n_folds))
         dataset_results = []
         for fold_idx in folds:
             dataset_results.append(

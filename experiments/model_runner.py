@@ -94,7 +94,7 @@ def train_model(denoise_class, model_cfg, train_cfg, sampling_cfg, train_loader,
     return diffusion
 
 
-def decide_n_samples(target_dist: dict, task: str, objective: str) -> int:
+def decide_n_samples(target_dist: dict, task: str) -> int:
     t_count, b_count, total, ir = (
         target_dist["target_count"], target_dist["background_count"],
         target_dist["total"], target_dist["IR"],
@@ -102,8 +102,8 @@ def decide_n_samples(target_dist: dict, task: str, objective: str) -> int:
     if task == "full_data":
         return total
     if task in ("minority_uncond", "minority_cond"):
-        if objective == "fidelity":
-            return t_count if t_count > 0 else 1
+        if t_count > 0:
+            return t_count
         if t_count == 0:
             return 1
         if ir >= 2:
@@ -118,7 +118,7 @@ def generate_samples(
     target_col: str, original_columns: list,
 ) -> pd.DataFrame:
     n_samples = sampling_cfg.num_samples if sampling_cfg.num_samples is not None \
-        else decide_n_samples(target_dist, task, diffusion.train_cfg.objective)
+        else decide_n_samples(target_dist, task)
 
     temp_cfg = replace(sampling_cfg, num_samples=n_samples)
     raw_tensor = diffusion.generate(sampling_cfg=temp_cfg, y_cond=target_class)

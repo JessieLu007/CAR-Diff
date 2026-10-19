@@ -46,9 +46,11 @@ def run_experiment(
     original_columns = df_all.columns.tolist()
 
     timestamp = datetime.now().strftime("%m%d_%H%M%S")
+    tag = exp_cfg.pipeline.tag
     exp_name = (
-        f"{task}_{exp_cfg.training.objective}_"
-        f"h{exp_cfg.model.dim_hidden}_t{exp_cfg.model.num_timesteps}_{exp_cfg.model.num_layers}_{timestamp}"
+        f"{task}_"
+        f"h{exp_cfg.model.dim_hidden}_t{exp_cfg.model.num_timesteps}_{exp_cfg.model.num_layers}"
+        + (f"_{tag}" if tag else "") + f"_{timestamp}"
     )
     save_path = os.path.join(
         exp_cfg.pipeline.save_base_dir, dataset_name,
