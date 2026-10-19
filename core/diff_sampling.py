@@ -80,10 +80,19 @@ def _sample_core_once(
     # ── 3. 逆扩散主循环：t = T-1 → 0 ───────────────────────────────
     for i in reversed(range(model.model_cfg.num_timesteps)):
         t = torch.full((b,), i, device=device, dtype=torch.long)
-        if cat_mode == 'sampled' and cat_state is not None:
-            x_in = torch.cat([x_num, cat_state], dim=1)
+        # if cat_mode == 'sampled' and cat_state is not None:
+        #     x_in = torch.cat([x_num, cat_state], dim=1)
+        # else:
+        #     x_in = torch.cat([x_num, log_x_cat.exp()], dim=1)
+
+        if getattr(model, "cat_input_zero", False):
+            x_cat_in = torch.zeros_like(log_x_cat)
+        elif cat_mode == 'sampled' and cat_state is not None:
+            x_cat_in = cat_state
         else:
-            x_in = torch.cat([x_num, log_x_cat.exp()], dim=1)
+            x_cat_in = log_x_cat.exp()
+
+        x_in = torch.cat([x_num, x_cat_in], dim=1)
 
         # ── 3a. 去噪网络前向 ─────────────────────────────────────────
         if not use_cfg:
@@ -160,8 +169,10 @@ def _sample_core_once(
                         a_bar = extract(model.alphas_cumprod, t - 1, onehot.shape)
                     else:
                         # legacy：保持原写法
-                        safe_prev = torch.clamp(t - 1, min=0)
-                        a_bar     = extract(model.alphas_cumprod_prev, safe_prev, onehot.shape)
+                        # safe_prev = torch.clamp(t - 1, min=0)
+                        # a_bar     = extract(model.alphas_cumprod_prev, safe_prev, onehot.shape)
+                        # 从当前时间步 t 更新到前一个时间步 t-1
+                        a_bar = extract(model.alphas_cumprod_prev, t, onehot.shape)
                     soft_prob = a_bar * onehot + (1.0 - a_bar) / K
                     new_log_x_cat[:, ix] = torch.log(soft_prob.clamp(min=1e-8))
                 else:
