@@ -31,17 +31,9 @@ class ModelConfig:
     prediction_type: str = 'eps' 
     version: str = "v2" # 新增模型版本 "v1" 或者 "v2"
 
-    # 分类列去噪输入模式：'legacy'(默认) | 'prob' | 'sampled'
-    cat_input_mode: Literal['legacy', 'prob','sampled'] = 'legacy'
-    use_cat_tokens: bool = True   # False：去掉整条类别 token 通路（仅 legacy 有意义，勿与 cat_input_mode 同时使用）
-
-    share_decoder: bool = True 
+    share_decoder: bool = True
+    cat_ar: bool = False   # True：最终类别解码用轻量自回归头（教师强制训练）
     
-
-    # 数值–类别交互开关（消融用，默认全开 = main）
-    use_num_from_cat: bool = True
-    use_cat_from_num: bool = True
-    use_cat_self_attn: bool = True
 
     # 损失组件
     use_normal_reg: bool = False

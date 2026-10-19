@@ -25,19 +25,13 @@ DS_ABL = ["hepatitis", "chronic_kidney_disease", "risk_factors_cervical_cancer",
 
 # tag: (训练种子, --model 覆盖项)
 NOISE = {
-    "main_s43": (43, ""),
-    "main_s44": (44, ""),
+    "slim_s43": (43, ""),
+    "slim_s44": (44, ""),
 }
 ABL = {
-    "abl_sampled":      (MAIN_SEED, "cat_input_mode=sampled"),
-    "abl_prob":         (MAIN_SEED, "cat_input_mode=prob"),
-    "abl_nonumfromcat": (MAIN_SEED, "use_num_from_cat=False"),
-    "abl_norev":        (MAIN_SEED, "use_cat_from_num=False"),
-    "abl_nocatattn":    (MAIN_SEED, "use_cat_self_attn=False"),
-    "abl_nointeract": (MAIN_SEED, "use_num_from_cat=False,use_cat_from_num=False,use_cat_self_attn=False"),
-    "abl_slim": (MAIN_SEED, "use_cat_tokens=False"),
-    "abl_slim_s43": (43, "use_cat_tokens=False"),
-    "abl_slim_s44": (44, "use_cat_tokens=False"),
+    "slim": (MAIN_SEED, ""),
+    "ar": (MAIN_SEED, "cat_ar=True"),
+    "nosharedec": (MAIN_SEED, "share_decoder=False"),
 }
 STAGES = {                    # 阶段: (变体表, 数据集, folds)
     "noise":  (NOISE, DS_SCREEN, [0, 1]),
@@ -94,40 +88,3 @@ if __name__ == "__main__":
             run_tag(tag, seed, model, dss, folds)
         if not a.no_eval:
             evaluate(dss, folds)
-
-
-# # experiments/tune_batch.py
-# import subprocess, sys
-
-# LAUNCH = [sys.executable, "-m", "experiments.run_cv"]
-# DS3 = ["hepatitis", "chronic_kidney_disease", "hcv_egy_data"]
-# DS_EXTRA = ["risk_factors_cervical_cancer", "framingham"]
-# FOLDS = [0, 1]
-# SMALL4 = DS3 + DS_EXTRA[:1]    # hepatitis, ckd, hcv, cervical
-
-
-# def run(tag, seed, ds_list, model="", train="", floor=0):
-#     for ds in ds_list:
-#         for k in FOLDS:
-#             cmd = LAUNCH + ["--dataset", ds, "--fold", str(k), "--seed", str(seed),
-#                             "--step_floor", str(floor), "--tag", tag]
-#             if model: cmd += ["--model", model]
-#             if train: cmd += ["--train", train]
-#             subprocess.run(cmd, check=True)
-
-
-# if __name__ == "__main__":
-#     stage = sys.argv[1]
-#     if stage == "epochs":
-#         run("e200", 42, DS3, train="target_epochs=200")
-#     elif stage == "noise_extra":
-#         run("base", 42, DS_EXTRA); run("base_s43", 43, DS_EXTRA); run("base_s44", 44, DS_EXTRA)
-#     elif stage == "sweep":
-#         run("t100",  42, SMALL4, model="num_timesteps=100")
-#         run("t500",  42, SMALL4, model="num_timesteps=500")
-#         run("cw0",   42, SMALL4, model="corr_weight=0")
-#         run("cw02",  42, SMALL4, model="corr_weight=0.2")
-#         run("ct025", 42, SMALL4, model="corr_t_ratio=0.25")
-#         run("ct10",  42, SMALL4, model="corr_t_ratio=1.0")
-#         run("d128",  42, SMALL4, model="dim_hidden=128")
-#         run("d512",  42, SMALL4, model="dim_hidden=512")

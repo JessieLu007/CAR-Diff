@@ -14,6 +14,9 @@ pd.set_option("display.max_columns", None)
 METRICS = {                       # 列名: 方向
     "corr_diff_fro": "min",
     "tvd_avg":       "min",
+    "corr_diff_nn":  "max",
+    "corr_diff_nc":  "max",
+    "corr_diff_cc":  "max",
     "c2st_auc":      "abs0.5",    # |AUC-0.5| 越小越好
     "beta_recall":   "max",
     "alpha_precision": "max",

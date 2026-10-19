@@ -42,10 +42,6 @@ MODEL_OVERRIDES = dict(
     num_timesteps=200,
     prediction_type="eps",
     corr_t_ratio=0.5,  
-    use_num_from_cat=False,
-    use_cat_from_num=False,
-    use_cat_self_attn=False,
-    use_cat_tokens=False,
 )
 TRAINING_OVERRIDES = dict(
     batch_size=64,

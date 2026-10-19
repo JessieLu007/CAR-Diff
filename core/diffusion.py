@@ -14,7 +14,7 @@ from configs.experiment_configs import ModelConfig, TrainingConfig, SamplingConf
 
 from .loss import compute_numerical_loss, compute_categorical_loss
 from .diff_schedules import DiffusionScheduleMixin
-from .diff_sampling import sample_core, gumbel_sample
+from .diff_sampling import sample_core
 from .diff_training import train_loop, smooth_labels
 
 
@@ -116,13 +116,10 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
             num_layers=self.model_cfg.num_layers,
             dropout=dropout,
         )
-        cat_mode = getattr(self.model_cfg, 'cat_input_mode', 'legacy')
-        if cat_mode != 'legacy':
-            net_kwargs['cat_input_mode'] = cat_mode
-        for k in ('use_num_from_cat', 'use_cat_from_num', 'use_cat_self_attn', 
-                  'use_cat_tokens', 'share_decoder'):
-            if getattr(self.model_cfg, k, True) is not True:
-                net_kwargs[k] = False
+        if self.model_cfg.share_decoder is not True:
+            net_kwargs['share_decoder'] = False
+        if getattr(self.model_cfg, 'cat_ar', False):
+            net_kwargs['cat_ar'] = True
         self._denoise_fn = self.denoise_class(**net_kwargs).to(self.device)
 
         self.to(self.device)
@@ -230,13 +227,9 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
             log_1_min_cumprod_alpha_t - torch.log(self.num_classes_expanded),
         )
 
-        #x_in = torch.cat([x_num_t, log_x_cat_t.exp()], dim=1)
-        if getattr(self.model_cfg, 'cat_input_mode', 'legacy') == 'sampled':
-            x_cat_in = self._sample_cat_xt(log_x_cat_t)
-        else:
-            x_cat_in = log_x_cat_t.exp()
-        x_in = torch.cat([x_num_t, x_cat_in], dim=1)
-        model_out = self._denoise_fn(x_in, t, y_cond)
+        x_in = torch.cat([x_num_t, log_x_cat_t.exp()], dim=1)   # 类别部分网络不使用
+        cat_tf = x_cat if getattr(self.model_cfg, 'cat_ar', False) else None
+        model_out = self._denoise_fn(x_in, t, y_cond, cat_tf=cat_tf)
 
         loss_num = compute_numerical_loss(self, x_num, x_num_t, model_out, t, noise)
         loss_cat = compute_categorical_loss(self, x_cat, model_out)
@@ -260,12 +253,3 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
             torch.arange(int(offsets[i]), int(offsets[i+1]), device=self.device)
             for i in range(len(self.num_classes))
         ]
-
-    def _sample_cat_xt(self, log_x_cat_t: torch.Tensor) -> torch.Tensor:
-        """按 q(x_t|x_0) 逐列硬采样，返回拼接的 one-hot [B, sum(K)]。"""
-        outs = []
-        for ix in self.slices_for_classes:
-            lp  = log_x_cat_t[:, ix]
-            idx = gumbel_sample(lp, 1.0)
-            outs.append(F.one_hot(idx, num_classes=lp.shape[1]).float())
-        return torch.cat(outs, dim=1)
