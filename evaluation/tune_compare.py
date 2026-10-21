@@ -12,13 +12,13 @@ pd.set_option("display.width", 220)
 pd.set_option("display.max_columns", None)
 
 METRICS = {                       # 列名: 方向
-    "corr_diff_fro": "min",
-    "tvd_avg":       "min",
-    "corr_diff_nn":  "max",
-    "corr_diff_nc":  "max",
-    "corr_diff_cc":  "max",
-    "c2st_auc":      "abs0.5",    # |AUC-0.5| 越小越好
-    "beta_recall":   "max",
+    "shape_err":       "min",
+    "cpt_err_all":     "min",
+    "corr_diff_nn":    "min",     # 均为绝对差，越低越好
+    "corr_diff_nc":    "min",
+    "corr_diff_cc":    "min",
+    "c2st_auc":        "abs0.5",  # |AUC-0.5| 越小越好
+    "beta_recall":     "max",
     "alpha_precision": "max",
 }
 Z_CLIP = 3.0
@@ -82,9 +82,9 @@ def compare(df, base, cands, noise, ref="test"):
 
 
 def dcr_ratio(df, methods):
+    """fake→train / holdout→train 的 Gower DCR 比值（metrics.metric_dcr 的 dcr_ratio）。"""
     b = df[(df["ref"] == "both") & df["method"].isin(methods)]
-    b = b.groupby(["dataset", "fold", "method"])[["dcr_train_mean", "dcr_test_mean"]].mean()
-    return (b["dcr_train_mean"] / b["dcr_test_mean"]).rename("r")
+    return b.groupby(["dataset", "fold", "method"])["dcr_ratio"].mean().rename("r")
 
 
 def dcr_guard(df, base, cands, noise_methods):
@@ -138,4 +138,4 @@ if __name__ == "__main__":
         print("\n汇总(mean_z 越负越好，z 已截断到 ±3):\n", summ.round(3))
         ratio, flag = dcr_guard(df, base, cands, nm)
         ratio.columns = [short(c) for c in ratio.columns]; flag.columns = [short(c) for c in flag.columns]
-        print("\ndcr 比值(train/test):\n", ratio); print("\n守卫:\n", flag)
+        print("\ndcr 比值(fake→train / holdout→train):\n", ratio); print("\n守卫:\n", flag)

@@ -1,4 +1,4 @@
-# evaluation/fidelity_agg.py
+# evaluation/agg.py
 from pathlib import Path
 import pandas as pd
 from scipy.stats import friedmanchisquare, wilcoxon

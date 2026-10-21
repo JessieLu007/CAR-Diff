@@ -159,13 +159,6 @@ def main():
 
     set_seed(args.seed)
 
-    # if args.all:
-    #     dataset_names = list(common.DATASETS)
-    #     print(f"▶ --all 模式，共 {len(dataset_names)} 个数据集: {dataset_names}")
-    # else:
-    #     dataset_names = [common.resolve_dataset(args.dataset)]
-    #     print(f"▶ dataset = {dataset_names[0]} (来自 --dataset {args.dataset})")
-
     all_results = {}
 
     for dataset_name in dataset_names:

@@ -5,8 +5,8 @@ from pathlib import Path
 
 EVAL_DIR = Path("eval")
 OUT_DIR = Path("agg_out"); OUT_DIR.mkdir(exist_ok=True)
-OURS_MAIN = "ours_h256_t200_3_main"
-OURS_D50 = "ours_h256_t200_3_main-target_epochs50"
+OURS_MAIN = "ours_h256_t200_3_final"
+OURS_D50 = "ours_h256_t200_3_final-target_epochs50"
 USE_D50 = False
 
 idx_all = json.load(open("data/datasets_idx.json", encoding="utf-8"))

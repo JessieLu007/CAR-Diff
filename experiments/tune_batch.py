@@ -22,21 +22,26 @@ FOLDS = [0, 1]
 DS_SCREEN = ["hepatitis", "chronic_kidney_disease", "framingham"]
 DS_ABL = ["hepatitis", "chronic_kidney_disease", "risk_factors_cervical_cancer",
           "hcv_egy_data", "framingham"]
+DS_FINAL = ["hepatitis", "chronic_kidney_disease", "risk_factors_cervical_cancer",
+            "hcv_egy_data", "framingham"]
 
 # tag: (训练种子, --model 覆盖项)
+FINAL = {"final": (MAIN_SEED, "")}
+
 NOISE = {
     "slim_s43": (43, ""),
     "slim_s44": (44, ""),
 }
 ABL = {
     "slim": (MAIN_SEED, ""),
-    "ar": (MAIN_SEED, "cat_ar=True"),
+    "slim2": (MAIN_SEED, ""),
     "nosharedec": (MAIN_SEED, "share_decoder=False"),
 }
 STAGES = {                    # 阶段: (变体表, 数据集, folds)
     "noise":  (NOISE, DS_SCREEN, [0, 1]),
     "abl01":  (ABL,   DS_ABL,    [0, 1]),
     "abl234": (ABL,   DS_ABL,    [2, 3, 4]),
+    "final":(FINAL, DS_FINAL, [0, 1, 2, 3, 4]),
 }
 
 

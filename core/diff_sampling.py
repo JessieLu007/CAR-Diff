@@ -3,7 +3,7 @@
 import torch
 import torch.nn.functional as F
 
-from .utils import extract, ohe_to_categories
+from .utils import extract
 from configs.experiment_configs import SamplingConfig
 
 
@@ -42,7 +42,6 @@ def _sample_core_once(
     device = model.device
     sampling_cfg = model.sampling_cfg
 
-    cat_ar          = getattr(model.model_cfg, 'cat_ar', False) and len(model.num_classes) > 0
     temperature_num = 1.0
     temperature_cat = sampling_cfg.cat_temperature_cap
     cfg_scale       = sampling_cfg.cfg_scale_fidelity
@@ -54,41 +53,24 @@ def _sample_core_once(
     y_pos = torch.full((b,), y_cond,                         device=device, dtype=torch.long)
     y_unc = torch.full((b,), model.model_cfg.null_class_idx, device=device, dtype=torch.long)
     y_neg = torch.full((b,), 1 - y_cond,                     device=device, dtype=torch.long)
-
     use_cfg = (model.train_cfg.task == 'minority_cond')
-    if cat_ar and use_cfg:
-        raise NotImplementedError("cat_ar 暂不支持 minority_cond 的 CFG 采样")
 
-    # ── 初始化 ───────────────────────────────────────────────────────
-    x_num = torch.randn(b, model.num_numerical_features, device=device)
-    if len(model.num_classes) > 0:
-        log_x_cat = torch.log(
-            torch.ones(b, sum(model.num_classes), device=device)
-            / model.num_classes_expanded
-        )
-    else:
-        log_x_cat = torch.empty(b, 0, device=device)
-    x_cat_ar = None
+    n_num = model.num_numerical_features
+    x_num = torch.randn(b, n_num, device=device)
+    x_cat = torch.empty(b, 0, device=device)
 
-    # ── 逆扩散主循环 ─────────────────────────────────────────────────
+    # ── 逆扩散主循环：只对数值列扩散，类别只在最后一步由分类头采样 ──
     for i in reversed(range(model.model_cfg.num_timesteps)):
-        t = torch.full((b,), i, device=device, dtype=torch.long)
-        x_in = torch.cat([x_num, log_x_cat.exp()], dim=1)
+        t    = torch.full((b,), i, device=device, dtype=torch.long)
+        last = (i == 0)
 
-        # 3a. 去噪网络前向
-        if cat_ar:
-            if i == 0:
-                model_out, x_cat_ar = model._denoise_fn.sample_final(
-                    x_in, t, y_pos, temperature_cat)
-            else:
-                model_out = model._denoise_fn(x_in, t, y_pos, decode_cat=False)
-        elif not use_cfg:
-            model_out = model._denoise_fn(x_in, t, y_pos)
+        if not use_cfg:
+            model_out = model._denoise_fn(x_num, t, y_pos, decode_cat=last)
         else:
-            x_in3 = torch.cat([x_in,  x_in,  x_in ], dim=0)
-            t3    = torch.cat([t,     t,     t    ], dim=0)
-            y3    = torch.cat([y_unc, y_pos, y_neg], dim=0)
-            out3  = model._denoise_fn(x_in3, t3, y3)
+            x3 = torch.cat([x_num, x_num, x_num], dim=0)
+            t3 = torch.cat([t,     t,     t    ], dim=0)
+            y3 = torch.cat([y_unc, y_pos, y_neg], dim=0)
+            out3 = model._denoise_fn(x3, t3, y3, decode_cat=last)
             out_unc, out_pos, out_neg = torch.chunk(out3, 3, dim=0)
             model_out = (
                 out_unc
@@ -96,10 +78,9 @@ def _sample_core_once(
                 - repulse_weight * (out_neg - out_unc)
             )
 
-        eps_pred      = model_out[:, :model.num_numerical_features]
-        model_cat_out = model_out[:, model.num_numerical_features:]
+        eps_pred = model_out[:, :n_num]
 
-        # 3b. 数值更新（DDPM 后验）
+        # 数值更新（DDPM 后验均值 + 噪声）
         x0_pred = (
             extract(model.sqrt_recip_alphas_cumprod,   t, x_num.shape) * x_num
           - extract(model.sqrt_recipml_alphas_cumprod, t, x_num.shape) * eps_pred
@@ -117,29 +98,15 @@ def _sample_core_once(
         else:
             x_num = mean
 
-        # 3c. 类别：cat_ar 只在最终一步解码，中间步无需更新
-        if cat_ar:
-            continue
+        # 类别：最后一步，各列由分类头 logits 独立采样
+        if last and len(model.num_classes) > 0:
+            model_cat_out = model_out[:, n_num:]
+            idx_list = [
+                gumbel_sample(model_cat_out[:, ix], temperature_cat)
+                for ix in model.slices_for_classes
+            ]
+            x_cat = torch.stack(idx_list, dim=1).to(x_num.dtype)
 
-        new_log_x_cat = torch.empty_like(model_cat_out)
-        for ix in model.slices_for_classes:
-            logits = model_cat_out[:, ix]
-            K      = logits.shape[1]
-            idx    = gumbel_sample(logits, temperature_cat)
-            onehot = F.one_hot(idx, num_classes=K).float()
-            if i > 0:
-                a_bar = extract(model.alphas_cumprod_prev, t, onehot.shape)
-                soft_prob = a_bar * onehot + (1.0 - a_bar) / K
-                new_log_x_cat[:, ix] = torch.log(soft_prob.clamp(min=1e-8))
-            else:
-                new_log_x_cat[:, ix] = torch.log(onehot + 1e-7)
-        log_x_cat = new_log_x_cat
-
-    # ── 解码输出 ─────────────────────────────────────────────────────
-    if cat_ar:
-        x_cat = x_cat_ar.to(x_num.dtype)
-    else:
-        x_cat = ohe_to_categories(log_x_cat.exp(), model.num_classes)
     return torch.cat([x_num, x_cat], dim=1)
 
 

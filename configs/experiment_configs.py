@@ -31,9 +31,7 @@ class ModelConfig:
     prediction_type: str = 'eps' 
     version: str = "v2" # 新增模型版本 "v1" 或者 "v2"
 
-    share_decoder: bool = True
-    cat_ar: bool = False   # True：最终类别解码用轻量自回归头（教师强制训练）
-    
+    share_decoder: bool = True    
 
     # 损失组件
     use_normal_reg: bool = False

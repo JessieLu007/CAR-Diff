@@ -12,7 +12,8 @@ from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
-from evaluation.utils import _corr_diff, _encode_scale, _kendall_mat, _mixed_corr, _tvd_cat, _tvd_cont, compute_crps, compute_shap_preservation, _score_clf
+from evaluation.utils import (_as_str, _cpt_scores, _ks_stat, _mixed_corr, _score_clf, _tvd_cat,
+                              compute_shap_preservation)
 
 try:
     from xgboost import XGBClassifier
@@ -83,11 +84,11 @@ def _active_cols(
 
 # ==========================================================
 # 参照型： （ref_df, fake_df, ...)
-# tvd, corr_diff, c2st, kendall, prdc, dep, crps, shap
+# shape, cpt, corr_diff, c2st, prdc, alpha_beta, shap
 # ==========================================================
 
-def metric_tvd(
-    ref_df:  pd.DataFrame,
+def metric_shape(
+    ref_df:   pd.DataFrame,
     fake_df:  pd.DataFrame,
     num_cols: list[str],
     cat_cols: list[str],
@@ -95,42 +96,80 @@ def metric_tvd(
     **kwargs,
 ) -> dict:
     """
-    Total Variation Distance per column and average.
-
-    Comparison : fake_df vs test_df
-    Mode       : controls full vs minority subset
-    Outputs    : tvd_avg, tvd_<col> for each feature column
-    Interpretation : lower is better; 0 = identical distributions
+    SDMetrics Column Shapes：数值列 KS 统计量、类别列 TVD（均为误差，0 = 相同）。
+    Outputs : shape_err（列均值，越低越好）、shape_score = 1 − shape_err（SDMetrics 原始得分）、
+              colshape_<col>（逐列得分 = KSComplement / TVComplement，进 detail）
     """
-    mode = config.get_mode('tvd')
+    mode = config.get_mode('shape')
     ref  = _subset(ref_df, mode, config)
     fake = _subset(fake_df, mode, config)
     n_cols, c_cols = _active_cols(num_cols, cat_cols, mode, config)
 
     per_col: dict[str, float] = {}
     for col in n_cols:
-        per_col[col] = _tvd_cont(ref[col].values, fake[col].values)
+        per_col[col] = _ks_stat(ref[col].to_numpy(), fake[col].to_numpy())
     for col in c_cols:
-        per_col[col] = _tvd_cat(ref[col].values, fake[col].values)
+        per_col[col] = _tvd_cat(ref[col].to_numpy(), fake[col].to_numpy())
 
-    result = {
-        'tvd_avg': float(np.mean(list(per_col.values()))) if per_col else float('nan')
-    }
+    err = float(np.mean(list(per_col.values()))) if per_col else float('nan')
+    result = {'shape_err': err, 'shape_score': 1.0 - err}
     for col, v in per_col.items():
-        result[f'tvd_{col}'] = v
+        result[f'colshape_{col}'] = 1.0 - v
+    return result
+
+
+def metric_cpt(
+    ref_df:   pd.DataFrame,
+    fake_df:  pd.DataFrame,
+    num_cols: list[str],
+    cat_cols: list[str],
+    config:   EvalConfig,
+    n_bins:   int = 10,
+    **kwargs,
+) -> dict:
+    """
+    SDMetrics Column Pair Trends（自实现，向量化）：
+      num–num : 1 − |ρ_ref − ρ_fake| / 2（Pearson）
+      含类别列 : 联合分布列联相似度 1 − ½ Σ|p_ref − p_fake|；数值列按 ref 取值范围等宽分 n_bins 箱
+    Outputs : cpt_score_{nn,nc,cc,all}（原始得分，越高越好）、cpt_err_{...} = 1 − 得分（越低越好）、
+              cpt_pair_<a>__<b>（逐对得分，进 detail）。all = 全部列对的平均。
+    """
+    mode = config.get_mode('cpt')
+    ref  = _subset(ref_df, mode, config)
+    fake = _subset(fake_df, mode, config)
+    n_cols, c_cols = _active_cols(num_cols, cat_cols, mode, config)
+
+    by: dict[str, list[float]] = {'nn': [], 'nc': [], 'cc': []}
+    result: dict[str, float] = {}
+    for a, b, kind, s in _cpt_scores(ref, fake, n_cols, c_cols, n_bins):
+        by[kind].append(s)
+        result[f'cpt_pair_{a}__{b}'] = s
+
+    def _mean(v):
+        return float(np.mean(v)) if len(v) else float('nan')
+
+    groups = {**by, 'all': [s for v in by.values() for s in v]}
+    for k, v in groups.items():
+        sc = _mean(v)
+        result[f'cpt_score_{k}'] = sc
+        result[f'cpt_err_{k}'] = 1.0 - sc
     return result
 
 
 _REF_CORR = {}
 
 def metric_corr_diff(ref_df, fake_df, num_cols, cat_cols, config, **kwargs) -> dict:
+    """
+    分块关联强度差（|C_ref − C_fake| 的块内均值，越低越好）：
+      nn: Spearman；nc: η²；cc: bias-corrected Cramér's V
+    """
     mode = config.get_mode('corr_diff')
     ref  = _subset(ref_df, mode, config)
     fake = _subset(fake_df, mode, config)
     n_cols, c_cols = _active_cols(num_cols, cat_cols, mode, config)
     if len(n_cols) + len(c_cols) < 2:
         warnings.warn("corr_diff: fewer than 2 active feature columns, skipping.")
-        return {'corr_diff_mean': float('nan'), 'corr_diff_fro': float('nan')}
+        return {'corr_diff_nn': float('nan'), 'corr_diff_nc': float('nan'), 'corr_diff_cc': float('nan')}
     key = (id(ref_df), mode, tuple(n_cols), tuple(c_cols))
     if key not in _REF_CORR:
         _REF_CORR[key] = _mixed_corr(ref, n_cols, c_cols)
@@ -139,7 +178,6 @@ def metric_corr_diff(ref_df, fake_df, num_cols, cat_cols, config, **kwargs) -> d
 
     diff = (C_ref - C_fake).abs().values
     p = len(n_cols)
-    mask = np.triu(np.ones(diff.shape, dtype=bool), k=1)
 
     def _upper(m):
         return m[np.triu_indices(m.shape[0], k=1)]
@@ -147,16 +185,9 @@ def metric_corr_diff(ref_df, fake_df, num_cols, cat_cols, config, **kwargs) -> d
     def _mean(v):
         return float(np.mean(v)) if np.size(v) else float('nan')
 
-    return {'corr_diff_mean': float(diff[mask].mean()),
-            'corr_diff_fro':  float(np.linalg.norm(diff)),
-            'corr_diff_nn':   _mean(_upper(diff[:p, :p])),
-            'corr_diff_nc':   _mean(diff[:p, p:]),
-            'corr_diff_cc':   _mean(_upper(diff[p:, p:]))}
-    
-    diff = (C_ref - C_fake).abs()
-    mask = np.triu(np.ones(diff.shape, dtype=bool), k=1)
-    return {'corr_diff_mean': float(diff.values[mask].mean()),
-            'corr_diff_fro':  float(np.linalg.norm(diff.values))}
+    return {'corr_diff_nn': _mean(_upper(diff[:p, :p])),
+            'corr_diff_nc': _mean(diff[:p, p:]),
+            'corr_diff_cc': _mean(_upper(diff[p:, p:]))}
 
 
 def metric_c2st(
@@ -169,12 +200,6 @@ def metric_c2st(
     random_state: int = 42,
     **kwargs,
 ) -> dict:
-    """
-    Interpretation :
-        AUC ≈ 0.5 → indistinguishable (ideal)
-        AUC > 0.7 → detectable gap
-        AUC > 0.9 → highly distinguishable (poor quality)
-    """
     if not _HAS_XGB and not _HAS_LGB:
         warnings.warn("c2st: xgboost/lightgbm not installed, skipping.")
         return {'c2st_auc': float('nan')}
@@ -218,55 +243,6 @@ def metric_c2st(
     if hasattr(clf, 'feature_importances_'):
         for col, imp in zip(all_feat, clf.feature_importances_):
             result[f'c2st_fimp_{col}'] = float(imp)
-    return result
-
-
-def metric_kendall(
-    ref_df:  pd.DataFrame,
-    fake_df:  pd.DataFrame,
-    num_cols: list[str],
-    cat_cols: list[str],
-    config:   EvalConfig,
-    **kwargs,
-) -> dict:
-    """
-    Kendall τ-b inter-attribute association heatmap.
-
-    Comparison  : fake_df vs test_df (numerical columns only)
-    Mode        : configurable via config / metric_modes['kendall']
-    Outputs     : summary stats + per-pair values for heatmap reconstruction
-
-    kendall_diff_mean / _fro          – summary (lower is better)
-    kendall_real_{ci}__{cj}           – real pairwise τ (upper triangle)
-    kendall_fake_{ci}__{cj}           – fake pairwise τ
-    kendall_diff_{ci}__{cj}           – |real − fake| per pair
-    """
-    mode      = config.get_mode('kendall')
-    ref       = _subset(ref_df, mode, config)
-    fake      = _subset(fake_df, mode, config)
-    n_cols, _ = _active_cols(num_cols, cat_cols, mode, config)
-
-    if len(n_cols) < 2:
-        warnings.warn("kendall: fewer than 2 active numerical columns, skipping.")
-        return {'kendall_diff_mean': float('nan'), 'kendall_diff_fro': float('nan')}
-
-    K_ref  = _kendall_mat(ref,  n_cols)
-    K_fake = _kendall_mat(fake, n_cols)
-    diff   = (K_ref - K_fake).abs()
-
-    mask  = np.triu(np.ones(diff.shape, dtype=bool), k=1)
-    upper = diff.values[mask]
-
-    result: dict[str, float] = {
-        'kendall_diff_mean': float(upper.mean()),
-        'kendall_diff_fro':  float(np.linalg.norm(diff.values)),
-    }
-    for i, ci in enumerate(n_cols):
-        for j, cj in enumerate(n_cols):
-            if j > i:
-                result[f'kendall_real_{ci}__{cj}'] = float(K_ref.iloc[i, j])
-                result[f'kendall_fake_{ci}__{cj}'] = float(K_fake.iloc[i, j])
-                result[f'kendall_diff_{ci}__{cj}'] = float(diff.iloc[i, j])
     return result
 
 
@@ -340,51 +316,6 @@ def metric_prdc(ref_df, fake_df, num_cols, cat_cols, config, k: int = 5, **kw) -
     return {f'prdc_{x}': float(r[x]) for x in names}
 
 
-def metric_dep_old(ref_df, fake_df, num_cols, cat_cols, config,
-               threshold: float = 0.5, tolerance: float = 0.1, **kw) -> dict:
-    cols, _ = _active_cols(num_cols, cat_cols, config.get_mode('dep'), config)
-    iu = np.triu_indices(len(cols), k=1)
-    r = ref_df[cols].corr(method='spearman').to_numpy()[iu]
-    f = np.nan_to_num(fake_df[cols].corr(method='spearman').to_numpy()[iu])
-    m = np.abs(r) >= threshold
-    nan = float('nan')
-    if not m.any():
-        return {'dep_n_pairs': 0, 'dep_err_mean': nan, 'dep_err_median': nan,
-                'dep_preserve_rate': nan, 'dep_direction_rate': nan}
-    err = np.abs(r[m] - f[m])
-    return {
-        'dep_n_pairs': int(m.sum()),
-        'dep_err_mean': float(err.mean()),
-        'dep_err_median': float(np.median(err)),
-        'dep_preserve_rate': float((err <= tolerance).mean()),
-        'dep_direction_rate': float((np.sign(r[m]) == np.sign(f[m])).mean()),
-    }
-
-def metric_dep(ref_df, fake_df, num_cols, cat_cols, config,
-               threshold: float = 0.3, tolerance: float = 0.1, **kw) -> dict:
-    n, c = _active_cols(num_cols, cat_cols, config.get_mode('dep'), config)
-    cols = n + c
-    iu = np.triu_indices(len(cols), k=1)
-    r = _mixed_corr(ref_df,  n, c).to_numpy()[iu]
-    f = _mixed_corr(fake_df, n, c).to_numpy()[iu]
-    nan = float('nan')
-    m = np.abs(r) >= threshold
-    if not m.any():
-        return {'dep_n_pairs': 0, 'dep_err_mean': nan, 'dep_err_median': nan,
-                'dep_preserve_rate': nan, 'dep_direction_rate': nan}
-    err = np.abs(r[m] - f[m])
-    out = {'dep_n_pairs': int(m.sum()),
-           'dep_err_mean': float(err.mean()),
-           'dep_err_median': float(np.median(err)),
-           'dep_preserve_rate': float((err <= tolerance).mean())}
-    # 方向只对"有符号"的 num–num 对有意义
-    nn = np.zeros(len(cols), dtype=bool); nn[:len(n)] = True
-    both_num = (nn[iu[0]] & nn[iu[1]])[m]
-    out['dep_direction_rate'] = (float((np.sign(r[m][both_num]) == np.sign(f[m][both_num])).mean())
-                                 if both_num.any() else nan)
-    return out
-
-
 def _alpha_beta_naive_gpu(xr, xf, bs=2048, return_curve=False):
     dev = _dev()
     xr = np.asarray(xr, dtype=np.float64); xf = np.asarray(xf, dtype=np.float64)
@@ -455,12 +386,7 @@ def metric_alpha_beta(ref_df, fake_df, num_cols, cat_cols, config,
     dp, db = _alpha_beta_naive_gpu(xr, xf)
     return {'alpha_precision': dp, 'beta_recall': db}
 
-    res = AlphaPrecision().evaluate(GenericDataLoader(pd.DataFrame(xr).add_prefix('f')),
-                                    GenericDataLoader(pd.DataFrame(xf).add_prefix('f')))
-    return {'alpha_precision': float(res['delta_precision_alpha_naive']),
-            'beta_recall':     float(res['delta_coverage_beta_naive'])}
 
-_NAN_CRPS = {'crps_F': float('nan'), 'crps_S': float('nan')}
 _NAN_SHAP = {'shap_corr': float('nan'), 'shap_cos': float('nan')}
 
 
@@ -489,20 +415,6 @@ def _prep(ref_df, fake_df, num_cols, cat_cols, label_col):
     return enc(ref_df), enc(fake_df)
 
 
-def metric_crps(ref_df, fake_df, num_cols, cat_cols, config: EvalConfig,
-                top_k: int = 10, **kwargs) -> dict:
-    if config.minority_col is None:
-        warnings.warn("crps: EvalConfig.minority_col (label) must be set, skipping.")
-        return dict(_NAN_CRPS)
-    tr, fk = _prep(ref_df, fake_df, num_cols, cat_cols, config.minority_col)
-    if tr.iloc[:, -1].nunique() < 2 or tr.shape[1] - 1 < 3:
-        warnings.warn("crps: ref_df needs >=2 classes and >=3 features "
-                      "(pre_filtered ref_df is single-class), skipping.")
-        return dict(_NAN_CRPS)
-    F, S = compute_crps(tr, fk, top_k=min(top_k, tr.shape[1] - 1), cat_cols=[c for c in cat_cols if c != config.minority_col])
-    return {'crps_F': float(F), 'crps_S': float(S)}
-
-
 def metric_shap(ref_df, fake_df, num_cols, cat_cols, config: EvalConfig,
                 **kwargs) -> dict:
     if config.minority_col is None:
@@ -521,54 +433,97 @@ def metric_shap(ref_df, fake_df, num_cols, cat_cols, config: EvalConfig,
 # dcr, tstr
 # ==========================================================
 
-def metric_dcr(
-    train_df:     pd.DataFrame,
-    test_df:      pd.DataFrame,
-    fake_df:      pd.DataFrame,
-    num_cols:     list[str],
-    cat_cols:     list[str],
-    config:       EvalConfig,
-    max_samples:  int | None = None,
-    random_state: int = 42,
-    **kwargs,
-) -> dict:
+def gower_min_dist(train, queries, num_cols, cat_cols, bs: int = 1024):
+    """
+    每个 query 行到 train 的最近 Gower 距离（对全部列取平均）：
+      数值列 |Δ| / range(train)（clip 到 [0,1]），类别列 0/1 失配（train 中未见类别视为失配）。
+    实现：数值部分用 L1 cdist；类别失配数 = 类别列数 − one-hot 内积（矩阵乘法，避免逐列比较）。
+    queries 为 DataFrame 列表，返回对应的距离数组列表（train one-hot 只构造一次）。
+    """
+    dev = _dev()
+    q = len(cat_cols)
+    d = len(num_cols) + q
 
+    if num_cols:
+        X = train[num_cols].to_numpy(dtype=float)
+        lo = X.min(axis=0)
+        rg = X.max(axis=0) - lo
+        rg[rg == 0] = 1.0
+
+        def _num(df):
+            x = np.clip((df[num_cols].to_numpy(dtype=float) - lo) / rg, 0.0, 1.0)
+            return torch.as_tensor(x, dtype=torch.float32, device=dev)
+
+        Nt = _num(train)
+
+    if q:
+        cats = [np.unique(_as_str(train[c].to_numpy())) for c in cat_cols]
+        offs = np.concatenate([[0], np.cumsum([len(k) + 1 for k in cats])])   # 每列多留 1 位给"未见类别"
+
+        def _oh(df):
+            idx = np.empty((len(df), q), dtype=np.int64)
+            for j, c in enumerate(cat_cols):
+                cd = pd.Categorical(_as_str(df[c].to_numpy()), categories=cats[j]).codes.astype(np.int64)
+                idx[:, j] = np.where(cd < 0, len(cats[j]), cd) + offs[j]
+            t = torch.zeros(len(df), int(offs[-1]), device=dev)
+            return t.scatter_(1, torch.as_tensor(idx, device=dev), 1.0)
+
+        Ot = _oh(train)
+
+    outs = []
+    for Q in queries:
+        res = []
+        for i in range(0, len(Q), bs):
+            chunk = Q.iloc[i:i + bs]
+            dist = torch.zeros(len(chunk), len(train), device=dev)
+            if num_cols:
+                dist += torch.cdist(_num(chunk), Nt, p=1.0)
+            if q:
+                dist += q - _oh(chunk) @ Ot.T
+            res.append((dist.min(dim=1).values / d).cpu())
+        outs.append(torch.cat(res).numpy().astype(np.float64))
+    return outs
+
+
+def holdout_dcr(train_df, test_df, num_cols, cat_cols, config) -> np.ndarray:
+    """holdout real → train 的最近 Gower 距离，作为 DCR 基线（每折只需算一次）。"""
     mode  = config.get_mode('dcr')
-    fake  = _subset(fake_df,  mode, config)
     train = _subset(train_df, mode, config)
     test  = _subset(test_df,  mode, config)
     n_cols, c_cols = _active_cols(num_cols, cat_cols, mode, config)
-    all_feat = n_cols + c_cols
+    return gower_min_dist(train, [test], n_cols, c_cols)[0]
 
-    # normalize using train as reference (consistent scale across all sets)
-    t = time.time()
-    X_train, X_test, X_fake = _encode_scale(
-        train[all_feat], test[all_feat], fake[all_feat], cat_cols=c_cols
-    )
-    print('  encode', time.time() - t, X_train.shape, flush=True)
 
-    # rng = np.random.default_rng(random_state)
-    # idx = rng.choice(len(X_fake), min(max_samples, len(X_fake)), replace=False)
-    # X_s = X_fake[idx]
+def metric_dcr(
+    train_df:  pd.DataFrame,
+    test_df:   pd.DataFrame,
+    fake_df:   pd.DataFrame,
+    num_cols:  list[str],
+    cat_cols:  list[str],
+    config:    EvalConfig,
+    dcr_real:  np.ndarray | None = None,
+    **kwargs,
+) -> dict:
+    """
+    DCR（Gower 距离）：fake→train 与基线 holdout→train 比较。
+    Outputs : dcr_mean（fake→train 均值）、dcr_ratio（dcr_mean / holdout 均值，≈1 无系统性记忆，明显 <1 疑似记忆）、
+              dcr_ks（两分布的 KS 统计量）、dcr_exact（fake 中与某训练行完全相同的比例）
+    dcr_real 传入则复用（run.py 每折算一次）。
+    """
+    mode  = config.get_mode('dcr')
+    fake  = _subset(fake_df,  mode, config)
+    train = _subset(train_df, mode, config)
+    n_cols, c_cols = _active_cols(num_cols, cat_cols, mode, config)
 
-    if max_samples is None or max_samples >= len(X_fake):
-        X_s = X_fake
-    else:
-        rng = np.random.default_rng(random_state)
-        X_s = X_fake[rng.choice(len(X_fake), max_samples, replace=False)]
-
-    # dcr_train = NearestNeighbors(n_neighbors=1).fit(X_train).kneighbors(X_s)[0][:, 0]
-    # dcr_test  = NearestNeighbors(n_neighbors=1).fit(X_test).kneighbors(X_s)[0][:, 0]
-    dcr_train = _min_dist(X_s, X_train)
-    dcr_test  = _min_dist(X_s, X_test)
-
-    ks_stat, ks_pval = stats.ks_2samp(dcr_train, dcr_test)
+    dcr_fake = gower_min_dist(train, [fake], n_cols, c_cols)[0]
+    if dcr_real is None:
+        dcr_real = holdout_dcr(train_df, test_df, num_cols, cat_cols, config)
 
     return {
-        'dcr_train_mean': float(dcr_train.mean()),
-        'dcr_test_mean':  float(dcr_test.mean()),
-        'dcr_ks_stat':    float(ks_stat),
-        'dcr_ks_pval':    float(ks_pval),
+        'dcr_mean':  float(dcr_fake.mean()),
+        'dcr_ratio': float(dcr_fake.mean() / (dcr_real.mean() + 1e-12)),
+        'dcr_ks':    _ks_stat(dcr_fake, dcr_real),
+        'dcr_exact': float((dcr_fake <= 1e-9).mean()),
     }
 
 
@@ -586,9 +541,8 @@ def metric_tstr(
     TSTR evaluation with robust handling of unknown categories and label rounding.
     """
 
-    _SFXS = ('acc', 'recall', 'f1', 'gmean', 'roc_auc', 'pr_auc')
-    _nan  = {f'tstr_{p}_{s}': float('nan')
-             for p in ('trtr', 'tstr', 'delta') for s in _SFXS}
+    _SFXS = ('roc_auc', 'pr_auc', 'f1', 'gmean')
+    _nan  = {f'tstr_{s}': float('nan') for s in _SFXS}
 
     if not (_HAS_XGB or _HAS_LGB):
         warnings.warn("tstr: xgboost/lightgbm not installed, skipping.")
@@ -675,7 +629,6 @@ def metric_tstr(
             y = y.astype(str)
         return le_label.transform(y)
 
-    X_real = _enc_X(train_df); y_real = _enc_y(train_df)
     X_fake = _enc_X(fake_df);  y_fake = _enc_y(fake_df)
     X_test = _enc_X(test_df);  y_test = _enc_y(test_df)
 
@@ -695,16 +648,22 @@ def metric_tstr(
 
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        clf_trtr = _build(); clf_trtr.fit(X_real, y_real)
-        clf_tstr = _build(); clf_tstr.fit(X_fake, y_fake)
+        clf = _build(); clf.fit(X_fake, y_fake)
 
-    trtr_s = _score_clf(clf_trtr, X_test, y_test, pos_label=minority_enc)
-    tstr_s = _score_clf(clf_tstr, X_test, y_test, pos_label=minority_enc)
+    s = _score_clf(clf, X_test, y_test, pos_label=minority_enc)
+    return {f'tstr_{k}': s[k] for k in _SFXS}
 
-    result = {}
-    for k in _SFXS:
-        rv, sv = trtr_s[k], tstr_s[k]
-        result[f'tstr_trtr_{k}'] = rv
-        result[f'tstr_tstr_{k}'] = sv
-        #result[f'tstr_delta_{k}'] = sv - rv if not (np.isnan(rv) or np.isnan(sv)) else float('nan')
-    return result
+
+def metric_real(train_df, test_df, num_cols, cat_cols, config, dcr_real=None, **kwargs) -> dict:
+    """
+    method='real' 行（ref=both，每折一行）：
+      tstr_* = TRTR（用真实训练集训练，即 metric_tstr(train, test, train)）
+      dcr_mean / dcr_exact = holdout→train 的 DCR 基线
+    """
+    if dcr_real is None:
+        dcr_real = holdout_dcr(train_df, test_df, num_cols, cat_cols, config)
+    row = {'dcr_mean': float(dcr_real.mean()), 'dcr_exact': float((dcr_real <= 1e-9).mean())}
+    row.update(metric_tstr(train_df=train_df, test_df=test_df, fake_df=train_df,
+                           num_cols=num_cols, cat_cols=cat_cols, config=config))
+    return row
+    
