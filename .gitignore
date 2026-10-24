@@ -1,5 +1,7 @@
 # 忽略 results 目录
 results/
+eval/
+ddpm_med_bk_*/
 
 # Python 相关
 __pycache__/
