@@ -1,37 +1,18 @@
-# 忽略 results 目录
-results/
-eval/
-ddpm_med_bk_*/
-
-# Python 相关
-__pycache__/
-.ipynb_checkpoints/
-*.pyc
-*.pyo
-*.pyd
-*.py[cod]
-*$py.class
-*.so
-.Python
-
-# 虚拟环境
-venv/
-env/
-ENV/
-
-# IDE
-.vscode/
-.idea/
-
-# 数据和模型文件（根据需要添加）
+# 训练产物 / checkpoint
+**/ckpt/
+*.joblib
+*.npy
+*.zip
+*.pt
 *.pth
-*.pkl
-*.h5
+*.ckpt
 
-# 日志文件
-*.log
+# 数据 & 输出
+outputs/
+runs/
 
-# 临时文件
-*.tmp
-*.bak
-*~
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
