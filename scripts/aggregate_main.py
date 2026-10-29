@@ -1,17 +1,15 @@
 # scripts/aggregate_main.py   在项目根目录运行：python scripts/aggregate_main.py
 import numpy as np, pandas as pd
 from pathlib import Path
-from scipy.stats import friedmanchisquare
 
 EVAL_DIR = Path("eval")
 OUT_ROOT = Path("agg_out"); OUT_ROOT.mkdir(exist_ok=True)
-OURS_MAIN = "ours_h256_t200_3_final"
-OURS_D50 = "ours_h256_t200_3_final-target_epochs50"
-USE_D50 = False   # 50 epochs 结果出来并确定采用后改 True
+OURS_MAIN = "ours_h256_t200_3_abl_ar" # "ours_h256_t200_3_final"
+OURS_BY_DS = {} # {"diabetic_data": "ours_h256_t200_3_ep200"}   # 统一 200 epochs 协议；diabetic 的 final 标签是 ep50，仅作敏感性分析
 
 KEYS = ["dataset", "fold", "method", "sample"]
 
-# 主表：参与 排名 / 胜负 / Friedman
+# 主表：参与排名
 HIGHER = ["alpha_precision", "beta_recall", "tstr_roc_auc", "tstr_pr_auc", "tstr_gmean"]
 LOWER  = ["shape_err", "cpt_err_all", "c2st_dev"]
 # 附录：只输出 mean±std
@@ -32,7 +30,7 @@ df = raw[raw["method"] != "real"].copy()
 
 # 2. 选定 ours 的版本，并统一命名为 ours
 is_ours = df["method"].str.startswith("ours_")
-target = np.where((df["dataset"] == "diabetic_data") & USE_D50, OURS_D50, OURS_MAIN)
+target = df["dataset"].map(OURS_BY_DS).fillna(OURS_MAIN)
 df = df[~is_ours | (df["method"] == target)].copy()
 df.loc[df["method"].str.startswith("ours_"), "method"] = "ours"
 
@@ -61,41 +59,19 @@ def run(ref):
     ms.to_csv(out / "per_dataset_mean_std.csv")
     dm = g.groupby(["dataset", "method"])[ALL].mean()       # 数据集级均值
 
-    # 5. 数据集内排名 -> 跨数据集平均排名（仅主表指标）
+    # 5. 数据集内排名；跨数据集平均排名仅作描述性汇总（论文是否使用自行决定）
     ranks = pd.DataFrame({c: dm[c].groupby(level="dataset").rank(ascending=(c in LOWER)) for c in METRICS})
     ranks.to_csv(out / "ranks_per_dataset.csv")
     avg_rank = ranks.groupby(level="method").mean()
     avg_rank["overall"] = avg_rank.mean(axis=1)
     avg_rank.sort_values("overall").to_csv(out / "avg_rank.csv")
-
-    # 6. ours 对各 baseline：数据集级 win/tie/loss、折级胜率、Friedman（仅描述）
-    wtl, fold_win, fried = [], [], []
-    for c in METRICS:
-        for level, table in (("dataset", dm[c].unstack("method")), ("fold", g[c].unstack("method"))):
-            base = table.drop(columns="ours")
-            diff = table["ours"].values[:, None] - base.values
-            better = diff > 0 if c in HIGHER else diff < 0
-            for j, b in enumerate(base.columns):
-                if level == "dataset":
-                    wtl.append(dict(metric=c, baseline=b, win=int(better[:, j].sum()),
-                                    tie=int((diff[:, j] == 0).sum()),
-                                    loss=int((~better[:, j] & (diff[:, j] != 0)).sum())))
-                else:
-                    fold_win.append(dict(metric=c, baseline=b, fold_win_rate=better[:, j].mean()))
-        p = dm[c].unstack("method").dropna()
-        stat, pv = friedmanchisquare(*[p[m] for m in p.columns])
-        fried.append(dict(metric=c, n_datasets=len(p), chi2=stat, p=pv))
-
-    pd.DataFrame(wtl).to_csv(out / "win_tie_loss.csv", index=False)
-    pd.DataFrame(fold_win).to_csv(out / "fold_win_rate.csv", index=False)
-    pd.DataFrame(fried).to_csv(out / "friedman_descriptive.csv", index=False)
     print(f"[ref={ref}]"); print(avg_rank.sort_values("overall").round(2))
 
 
 for ref in ("train", "test"):          # train 为主表，test 为附录对照
     run(ref)
 
-# 7. real 基线（TRTR 与 holdout→train DCR），与 ref 无关
+# 6. real 基线（TRTR 与 holdout→train DCR），与 ref 无关
 rcols = [c for c in ALL if is_down(c) and c in real.columns]
 rb = real[real["ref"] == "both"].groupby("dataset")[rcols].agg(["mean", "std"])
 rb.columns = [f"{m}_{s}" for m, s in rb.columns]
