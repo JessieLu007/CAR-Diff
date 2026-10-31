@@ -23,14 +23,14 @@ import numpy as np
 import utils.common as common
 from experiments.data_prep import load_dataset_idx
 from experiments.run_experiment import run_experiment
-from core.denoise_model_v2 import TabMLPDenoise as TabMLPDenoiseV2
+from core.denoise_model import TabMLPDenoise
 
 
 # ============================ 常改的参数 ============================
 DATASET_NAME = common.DATASETS[0]
 SEED = common.SEEDS[0]
 N_FOLDS = 5
-DENOISE_CLASS = TabMLPDenoiseV2 
+DENOISE_CLASS = TabMLPDenoise
 
 DATA_OVERRIDES = dict(
     num_transform_method="quantile",

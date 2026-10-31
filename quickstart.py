@@ -20,7 +20,7 @@ target 给出时自动并入类别列并联合建模，评估时用于 tstr / sh
 
 说明：无验证集，固定训练预算（总步数 = epochs × ⌊N / batch_size⌋），取最终权重；类别列采用自回归类别头。
 评估需要 shap、xgboost、lightgbm、synthcity（仅 eval 时导入）；baselines 需要对应方法的依赖，
-tabkde 另需先运行 third_party/tabkde/setup_tabkde.sh。请在项目根目录运行。
+请在项目根目录运行。
 """
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ sys.path.insert(0, str(ROOT))
 
 from configs.experiment_configs import make_default_experiment_config
 from core.data_processor import TabularDataProcessor
-from core.denoise_model_v2 import TabMLPDenoise
+from core.denoise_model import TabMLPDenoise
 from experiments.model_runner import (
     build_dataloader, build_meta_info, generate_samples, load_run, save_run, train_model,
 )
@@ -74,7 +74,7 @@ NA_VALUES = ["?", "", " ", "NA", "nan", "None"]
 _DETAIL = re.compile(r"^(colshape_|cpt_pair_|c2st_fimp_)")
 KEY_METRICS = ["shape_err", "cpt_err_all", "corr_diff_cc", "c2st_auc", "alpha_precision",
                "beta_recall", "dcr_ratio", "dcr_exact", "tstr_roc_auc"]
-BASELINE_METHODS = ["smote", "ctgan", "tvae", "tabddpm", "tabkde"]
+BASELINE_METHODS = ["smote", "ctgan", "tvae", "tabddpm"] # tabkde和tabsyn下载代码修改后执行；
 
 
 # ─────────────────────────── 工具 ───────────────────────────
@@ -232,28 +232,6 @@ def sample(out_dir, num_rows: int | None = None, seed: int = 0, repeats: int = 1
 
 
 # ─────────────────────────── 对比方法 ───────────────────────────
-def _write_tabkde_info(name: str, train_imp: pd.DataFrame, spec: dict, out: Path) -> None:
-    """生成 data/Info/<name>.json（TabKDE 读取的列声明；标签列须在 cat_col_idx 中）。"""
-    cols = train_imp.columns.tolist()
-    tgt = spec["target"]
-    t = cols.index(tgt)
-    info = {
-        "name": name,
-        "task_type": "binclass" if train_imp[tgt].nunique() == 2 else "multiclass",
-        "header": 0,
-        "column_names": None,
-        "num_col_idx": [i for i, c in enumerate(cols) if c in set(spec["numerical"])],
-        "cat_col_idx": [i for i, c in enumerate(cols) if c in set(spec["categorical"]) and c != tgt] + [t],
-        "target_col_idx": [t],
-        "file_type": "csv",
-        "data_path": (out / "train_imputed.csv").resolve().as_posix(),
-        "test_path": ((out / "test_imputed.csv") if (out / "test_imputed.csv").exists()
-                      else (out / "train_imputed.csv")).resolve().as_posix(),
-    }
-    d = ROOT / "data" / "Info"
-    d.mkdir(parents=True, exist_ok=True)
-    (d / f"{name}.json").write_text(json.dumps(info, indent=4, ensure_ascii=False), encoding="utf-8")
-
 
 def baselines(train, spec, out_dir, test=None, methods=None, n_samples: int = 5, seed: int = 42,
               ddpm_lr: float | None = None, ctgan_bs: int = 500, force: bool = False) -> Path:
@@ -287,15 +265,12 @@ def baselines(train, spec, out_dir, test=None, methods=None, n_samples: int = 5,
         if not js:
             print(f"[skip] {m}")
             continue
-        if m in ("smote", "tabkde") and not tgt:
-            print(f"[fail] {m} 需要 spec 中声明 target")
+        if m == "smote" and not tgt:
+            print("[fail] smote 需要 spec 中声明 target")
             continue
         print(f"[baselines] {m} samples={js}", flush=True)
         try:
-            if m == "tabkde":
-                _write_tabkde_info(name, train_imp, spec, out)
-                frames = G.GEN[m](train_imp, test_imp if test_imp is not None else train_imp, meta, name, seed, js)
-            elif m == "ctgan":
+            if m == "ctgan":
                 frames = G.gen_ctgan(train_imp, test_imp, meta, name, seed, js, ctgan_bs)
             else:
                 frames = G.GEN[m](train_imp, test_imp, meta, name, seed, js)

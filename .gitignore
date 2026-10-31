@@ -24,4 +24,4 @@ results/
 eval/
 agg_out/
 *.zip
-tabkde/**/ckpt/
+tabkde/

@@ -27,7 +27,7 @@ def setup_jupyter_env():
     # 3. 字体设置
     try:
         from utils.set_fonts import apply_times_with_cn
-        apply_times_with_cn(cn_font_path=r"C:\Windows\Fonts\msyh.ttc")
+        apply_times_with_cn()
     except ImportError:
         print("⚠️ Warning: Could not import font setup.")
 

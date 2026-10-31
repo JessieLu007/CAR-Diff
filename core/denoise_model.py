@@ -1,4 +1,4 @@
-# core/denoise_model_v2.py  (数值扩散主干 + 共享表示 + 类别头；cat_ar=True 时类别头为自回归头)
+# core/denoise_model.py  (数值扩散主干 + 共享表示 + 类别头；cat_ar=True 时类别头为自回归头)
 from __future__ import annotations
 import torch
 import torch.nn as nn

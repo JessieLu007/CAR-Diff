@@ -30,7 +30,8 @@ DEFAULT_DATASET = common.DATASETS[0]
 DEFAULT_SEED = 2026
 DEFAULT_N_FOLDS = 5
 
-TABSYN_ROOT = os.environ.get('TABSYN_ROOT', str(Path(__file__).resolve().parents[2] / 'tabsyn-main'))
+#TABSYN_ROOT = os.environ.get('TABSYN_ROOT', str(Path(__file__).resolve().parents[2] / 'tabsyn-main'))
+TABSYN_ROOT = os.environ.get('TABSYN_ROOT', str(Path(_ROOT) / 'third_party' / 'tabsyn' / 'tabsyn-main'))
 DDPM_MED_SPLIT_DIR = "splits"             # 对应 ddpm_med 里 run_experiment 的 split_dir
 TASK = "full_data"                        # 对应 exp_cfg.training.task
 TASK_TYPE = "binclass"                    # tabsyn 需要: "binclass" | "regression"

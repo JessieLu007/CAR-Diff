@@ -1,22 +1,30 @@
-category_encoders==2.11.1
+# 直接依赖（版本取自当前可运行环境）
 ctgan==0.12.1
-icecream==2.2.0
-imbalanced_learn==0.14.2
-joblib==1.6.0
+imbalanced-learn==0.14.2
 lightgbm==4.7.0
 matplotlib==3.11.2
-numpy==2.5.3
-pandas==3.0.6
-plotly==7.1.0
-prdc==0.2
-scikit_learn==1.9.1
-scipy==1.18.1
-seaborn==0.13.2
-shap==0.51.0
+numpy==1.26.4
+pandas==2.3.3
+scikit-learn==1.7.2
+scipy==1.17.1
+# shap==0.51.0
 synthcity==0.2.12
-tomli==2.4.1
-tomli_w==1.2.0
-torch==2.14.1
-tqdm==4.70.1
-xgboost==3.4.1
-zero==0.9.2
+#tsai==1.0.1          # synthcity 内部硬依赖，锁定防止 pip 回退到旧版
+xgboost==2.1.4
+
+
+# ================================= 实际安装和部署步骤 =================================================
+# 1. 安装除 torch、setuptools、shap 外的所有直接依赖
+# pip install -r requirements.txt
+
+# 2. 安装 torch（会顺带拉取高版本 setuptools，暂时不用管）
+# pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cu130
+
+# 3. 强制把 setuptools 覆盖回 75.8.2，不碰其他依赖
+# pip install setuptools==75.8.2 --no-deps
+
+# 4. 单独安装 shap，不解析依赖
+# pip install shap==0.51.0 --no-deps
+
+# 5.0 单独安装tsai和tastai, 覆盖主清单里 synthcity 自动拉取的旧版
+# pip install tsai==1.0.1 fastai==2.8.12

@@ -1,0 +1,200 @@
+diff -ru --strip-trailing-cr a/process_dataset.py b/process_dataset.py
+--- a/process_dataset.py	2026-11-01 00:05:22.400201300 +0800
++++ b/process_dataset.py	2026-11-01 00:05:22.467790100 +0800
+@@ -4,6 +4,7 @@
+ import sys
+ import json
+ import argparse
++from pathlib import Path
+ 
+ TYPE_TRANSFORM ={
+     'float', np.float32,
+@@ -17,6 +18,7 @@
+ 
+ # General configs
+ parser.add_argument('--dataname', type=str, default=None, help='Name of dataset.')
++
+ args = parser.parse_args()
+ 
+ def preprocess_beijing():
+@@ -111,38 +113,26 @@
+     return idx_mapping, inverse_idx_mapping, idx_name_mapping
+ 
+ 
+-def train_val_test_split(data_df, cat_columns, num_train = 0, num_test = 0):
+-    total_num = data_df.shape[0]
+-    idx = np.arange(total_num)
+-
+-
+-    seed = 1234
++def train_val_test_split(dataset_name=None, task="full_data", split_dir="splits",):
+ 
+-    while True:
+-        np.random.seed(seed)
+-        np.random.shuffle(idx)
++    import json
++    from pathlib import Path
+ 
+-        train_idx = idx[:num_train]
+-        test_idx = idx[-num_test:]
++    dname = dataset_name or args.dataname   # 兼容你原来的全局 args 写法
++    ref_dir = Path(split_dir) / f"{dname}_{task}_imputed"
+ 
++    df_train = pd.read_csv(ref_dir / "real_train_imputed.csv")
++    df_val   = pd.read_csv(ref_dir / "real_val_imputed.csv")
++    df_test  = pd.read_csv(ref_dir / "real_test_imputed.csv")
+ 
+-        train_df = data_df.loc[train_idx]
+-        test_df = data_df.loc[test_idx]
++    with open(ref_dir / "meta.json", "r", encoding="utf-8") as f:
++        meta = json.load(f)
++    assert len(df_train) == meta["n_train"] and len(df_test) == meta["n_test"], \
++        f"{ref_dir} 下的数据行数和 meta.json 记录不一致，参考数据可能是旧版本或被污染"
+ 
++    #df_train = pd.concat([df_train, df_val], ignore_index=True)
+ 
+-
+-        flag = 0
+-        for i in cat_columns:
+-            if len(set(train_df[i])) != len(set(data_df[i])):
+-                flag = 1
+-                break
+-
+-        if flag == 0:
+-            break
+-        else:
+-            seed += 1
+-        
+-    return train_df, test_df, seed    
++    return df_train, df_test
+ 
+ 
+ def process_data(name):
+@@ -197,10 +187,11 @@
+     else:  
+         # Train/ Test Split, 90% Training, 10% Testing (Validation set will be selected from Training set)
+ 
+-        num_train = int(num_data*0.9)
+-        num_test = num_data - num_train
++        #num_train = int(num_data*0.9)
++        #num_test = num_data - num_train
++        target_column = column_names[target_col_idx[0]]
+ 
+-        train_df, test_df, seed = train_val_test_split(data_df, cat_columns, num_train, num_test)
++        train_df, test_df = train_val_test_split(dataset_name=name)
+     
+ 
+     train_df.columns = range(len(train_df.columns))
+@@ -246,7 +237,6 @@
+     for col in cat_columns:
+         test_df.loc[test_df[col] == '?', col] = 'nan'
+ 
+-
+     
+     X_num_train = train_df[num_columns].to_numpy().astype(np.float32)
+     X_cat_train = train_df[cat_columns].to_numpy()
+@@ -347,6 +337,3 @@
+     else:
+         for name in ['adult', 'default', 'shoppers', 'magic', 'beijing', 'news']:    
+             process_data(name)
+-
+-        
+-
+diff -ru --strip-trailing-cr a/tabsyn/diffusion_utils.py b/tabsyn/diffusion_utils.py
+--- a/tabsyn/diffusion_utils.py	2026-11-01 00:05:23.712266900 +0800
++++ b/tabsyn/diffusion_utils.py	2026-11-01 00:05:23.755591400 +0800
+@@ -19,7 +19,8 @@
+ S_max=float('inf')
+ S_noise=1
+ 
+-def sample(net, num_samples, dim, num_steps = 50, device = 'cuda:0'):
++def sample(net, num_samples, dim, num_steps = 50):
++    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+     latents = torch.randn([num_samples, dim], device=device)
+ 
+     step_indices = torch.arange(num_steps, dtype=torch.float32, device=latents.device)
+diff -ru --strip-trailing-cr a/tabsyn/latent_utils.py b/tabsyn/latent_utils.py
+--- a/tabsyn/latent_utils.py	2026-11-01 00:05:23.453606700 +0800
++++ b/tabsyn/latent_utils.py	2026-11-01 00:05:23.513054700 +0800
+@@ -6,6 +6,9 @@
+ from utils_train import preprocess
+ from tabsyn.vae.model import Decoder_model 
+ 
++import torch
++device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
++
+ def get_input_train(args):
+     dataname = args.dataname
+ 
+@@ -57,7 +60,7 @@
+     pre_decoder = Decoder_model(2, d_numerical, categories, 4, n_head = 1, factor = 32)
+ 
+     decoder_save_path = f'{curr_dir}/vae/ckpt/{dataname}/decoder.pt'
+-    pre_decoder.load_state_dict(torch.load(decoder_save_path))
++    pre_decoder.load_state_dict(torch.load(decoder_save_path, map_location=device))
+ 
+     info['pre_decoder'] = pre_decoder
+     info['token_dim'] = token_dim
+diff -ru --strip-trailing-cr a/tabsyn/main.py b/tabsyn/main.py
+--- a/tabsyn/main.py	2026-11-01 00:05:22.680059900 +0800
++++ b/tabsyn/main.py	2026-11-01 00:05:22.728759900 +0800
+@@ -51,7 +51,7 @@
+     model = Model(denoise_fn = denoise_fn, hid_dim = train_z.shape[1]).to(device)
+ 
+     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=0)
+-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=20, verbose=True)
++    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=20)
+ 
+     model.train()
+ 
+diff -ru --strip-trailing-cr a/tabsyn/sample.py b/tabsyn/sample.py
+--- a/tabsyn/sample.py	2026-11-01 00:05:22.922598800 +0800
++++ b/tabsyn/sample.py	2026-11-01 00:05:22.976735200 +0800
+@@ -26,14 +26,17 @@
+     
+     model = Model(denoise_fn = denoise_fn, hid_dim = train_z.shape[1]).to(device)
+ 
+-    model.load_state_dict(torch.load(f'{ckpt_path}/model.pt'))
++    model.load_state_dict(torch.load(f'{ckpt_path}/model.pt', map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu')))
+ 
+     '''
+         Generating samples    
+     '''
+     start_time = time.time()
+ 
+-    num_samples = train_z.shape[0]
++    if getattr(args, 'num_samples', None) is None:
++        num_samples = train_z.shape[0]
++    else:
++        num_samples = getattr(args, 'num_samples', None)
+     sample_dim = in_dim
+ 
+     x_next = sample(model.denoise_fn_D, num_samples, sample_dim)
+@@ -63,6 +66,7 @@
+     parser.add_argument('--gpu', type=int, default=0, help='GPU index.')
+     parser.add_argument('--epoch', type=int, default=None, help='Epoch.')
+     parser.add_argument('--steps', type=int, default=None, help='Number of function evaluations.')
++    parser.add_argument('--num_samples', type=int, default=None, help='Number of synthetic samples to generate. If None, use train_z.shape[0].')
+ 
+     args = parser.parse_args()
+ 
+diff -ru --strip-trailing-cr a/tabsyn/vae/main.py b/tabsyn/vae/main.py
+--- a/tabsyn/vae/main.py	2026-11-01 00:05:23.162128900 +0800
++++ b/tabsyn/vae/main.py	2026-11-01 00:05:23.225389600 +0800
+@@ -36,6 +36,7 @@
+     total_num = 0
+ 
+     for idx, x_cat in enumerate(Recon_X_cat):
++        
+         if x_cat is not None:
+             ce_loss += ce_loss_fn(x_cat, X_cat[:, idx])
+             x_hat = x_cat.argmax(dim = -1)
+@@ -112,7 +113,7 @@
+     pre_decoder.eval()
+ 
+     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WD)
+-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.95, patience=10, verbose=True)
++    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.95, patience=10)
+ 
+     num_epochs = 4000
+     best_train_loss = float('inf')
