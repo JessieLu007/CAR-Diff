@@ -58,8 +58,8 @@ def apply_times_with_cn(times_name="Times New Roman", cn_font_path=None, cn_font
 
     # 返回用于单项强制的 FontProperties（若需要）
     en_fp = FontProperties(family=times_name)
-    cn_fp = FontProperties(fname=cn_font_path) if cn_font_path else (FontProperties(family=cn_name) if cn_name else None)
-
+    #cn_fp = FontProperties(fname=cn_font_path) if cn_font_path else (FontProperties(family=cn_name) if cn_name else None)
+    cn_fp = FontProperties(fname=cn_font_path) if cn_font_path else (FontProperties(family=[cn_name]) if cn_name else None)
     # 打印检查信息（可注释）
     print("Applied font.family:", mpl.rcParams['font.family'])
     try:
