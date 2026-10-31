@@ -11,7 +11,7 @@
 # 数据 & 输出
 outputs/
 runs/
-splits/
+splits/*_imputed/
 data/Info/
 data/*_fold[0-9]*/
 
