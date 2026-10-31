@@ -1,0 +1,1219 @@
+diff -ruN --strip-trailing-cr -x ckpt -x __pycache__ -x .ipynb_checkpoints -x .DS_Store -x '*.pyc' tabkde_assembled/copula_diff_encoding/main.py ddpm_med/tabkde/copula_diff_encoding/main.py
+--- a/copula_diff_encoding/main.py	2026-10-31 18:33:50.441220300 +0800
++++ b/copula_diff_encoding/main.py	2026-10-02 17:39:56.000000000 +0800
+@@ -30,7 +30,7 @@
+     - dict: A dictionary where keys are file names and values are DataFrames. If loading fails, the value is None for that file.
+     """
+     dataframes = {}
+-    print(f'loading data from {data_path}')
++    #print(f'loading data from {data_path}')
+ 
+     for file_name in file_names:
+         file_path = data_path + file_name
+@@ -75,7 +75,7 @@
+     decorrelation = args.decorrelation
+     cat_encoding = args.cat_encoding_ordinal
+     copula_encoder = args.copula_encoder
+-    print(f'copula_encoder is {copula_encoder}')
++    #print(f'copula_encoder is {copula_encoder}')
+ 
+     device =  args.device
+ 
+@@ -87,14 +87,14 @@
+ 
+     curr_dir = os.path.dirname(os.path.abspath(__file__))
+     ckpt_dir = f'{curr_dir}/ckpt/{dataname}' 
+-    print(ckpt_dir)
++    #print(ckpt_dir)
+     if not os.path.exists(ckpt_dir):
+         os.makedirs(ckpt_dir)
+ 
+ 
+  
+     list_of_files = ['train.csv']
+-    print(data_dir)
++    #print(data_dir)
+     loaded_data = load_files(data_dir, *list_of_files)
+     train_data = loaded_data.get("train")
+     
+@@ -109,7 +109,7 @@
+      
+     np.save(f'{ckpt_dir}/train_z.npy', df_train_encoded.to_numpy())
+ 
+-    print(f"Successfully saved the embeddings on disk!: {ckpt_dir}/train_z.npy")  
++    #print(f"Successfully saved the embeddings on disk!: {ckpt_dir}/train_z.npy")  
+ 
+         
+ 
+diff -ruN --strip-trailing-cr -x ckpt -x __pycache__ -x .ipynb_checkpoints -x .DS_Store -x '*.pyc' tabkde_assembled/copula_diff_encoding/model.py ddpm_med/tabkde/copula_diff_encoding/model.py
+--- a/copula_diff_encoding/model.py	2026-10-31 18:33:50.442219800 +0800
++++ b/copula_diff_encoding/model.py	2026-10-02 17:39:56.000000000 +0800
+@@ -145,7 +145,7 @@
+      
+         df_decoded = num_data.copy()
+         if self.decorrelation:
+-            print('decorrelation is ON')
++            #print('decorrelation is ON')
+             df_decoded[:] = df_decoded@self.U
+         
+         if self.scaler is not None:
+diff -ruN --strip-trailing-cr -x ckpt -x __pycache__ -x .ipynb_checkpoints -x .DS_Store -x '*.pyc' tabkde_assembled/copula_encoding/main.py ddpm_med/tabkde/copula_encoding/main.py
+--- a/copula_encoding/main.py	2026-10-31 18:33:50.476200600 +0800
++++ b/copula_encoding/main.py	2026-10-03 16:52:46.000000000 +0800
+@@ -1,3 +1,4 @@
++# tabkde\copula_encoding\main.py
+ import numpy as np
+ import torch
+ import torch.nn as nn
+@@ -30,7 +31,7 @@
+     - dict: A dictionary where keys are file names and values are DataFrames. If loading fails, the value is None for that file.
+     """
+     dataframes = {}
+-    print(f'loading data from {data_path}')
++    #print(f'loading data from {data_path}')
+ 
+     for file_name in file_names:
+         file_path = data_path + file_name
+@@ -70,16 +71,15 @@
+ 
+ def main(args):
+     dataname = args.dataname
+-    data_dir = f'data/{dataname}/'
++    from pathlib import Path
++    root_dir = Path(__file__).parent.parent.parent
++    data_dir = f'{root_dir}/data/{dataname}/'
+     
+  
+     decorrelation = args.decorrelation
+     cat_encoding = args.cat_encoding_ordinal
+     copula_encoder = args.copula_encoder
+-    print(f'copula_encoder is {copula_encoder}')
+-
+-    device =  args.device
+-
++    #print(f'copula_encoder is {copula_encoder}')
+ 
+     info_path = data_dir + 'info.json'
+ 
+@@ -88,12 +88,12 @@
+ 
+     curr_dir = os.path.dirname(os.path.abspath(__file__))
+     ckpt_dir = f'{curr_dir}/ckpt/{dataname}' 
+-    print(ckpt_dir)
++    #print(ckpt_dir)
+     if not os.path.exists(ckpt_dir):
+         os.makedirs(ckpt_dir)
+  
+     list_of_files = ['train.csv']
+-    print(data_dir)
++    #print(data_dir)
+     loaded_data = load_files(data_dir, *list_of_files)
+     train_data = loaded_data.get("train")
+     
+@@ -102,18 +102,18 @@
+                                                     json_path = info_path, cat_encoding = cat_encoding)
+     
+     save_model(ordinal_encoder_model, name = 'data_aware_model', path = ckpt_dir)
+-    print(f'ordinal_encoder_model has been saved in {ckpt_dir}')
++    #print(f'ordinal_encoder_model has been saved in {ckpt_dir}')
+ 
+     if copula_encoder:
+         copula_model = EmpiricalTransformer(df_train_encoded)
+         df_train_encoded = copula_model.fit(method = 'average') 
+         save_model(copula_model, name = 'copula_model', path = ckpt_dir)
+-        print(f'copula_model has been saved in {ckpt_dir}')
++        #print(f'copula_model has been saved in {ckpt_dir}')
+      
+     np.save(f'{ckpt_dir}/train_z.npy', df_train_encoded.to_numpy())
+     #for IBM or large data we need to subsample .....
+     data_name_ = info['name']
+-    print(f'staring to learn DCR dist for {data_name_}.')
++    #print(f'staring to learn DCR dist for {data_name_}.')
+ 
+     gauss_model, _, _ = fit_mix_gaussian_to_(df_train_encoded, partition_portion=0.5, 
+                                              max_number_components=10, 
+@@ -125,9 +125,9 @@
+     
+     
+     save_model(gauss_model, name = 'gauss_model', path = ckpt_dir)
+-    print(f'mix_gauss_model for DCR dist has been saved on {ckpt_dir}.')
++    #print(f'mix_gauss_model for DCR dist has been saved on {ckpt_dir}.')
+ 
+-    print(f"Successfully saved pretrained embeddings (mix_gaussian_model, ordinal_encoder_model {'and copula_model' if copula_encoder else ''}) on disk!")  
++    #print(f"Successfully saved pretrained embeddings (mix_gaussian_model, ordinal_encoder_model {'and copula_model' if copula_encoder else ''}) on disk!")  
+ 
+         
+ 
+diff -ruN --strip-trailing-cr -x ckpt -x __pycache__ -x .ipynb_checkpoints -x .DS_Store -x '*.pyc' tabkde_assembled/diffusion_utils.py ddpm_med/tabkde/diffusion_utils.py
+--- a/diffusion_utils.py	2026-10-31 18:33:50.489193200 +0800
++++ b/diffusion_utils.py	2026-10-02 17:39:54.000000000 +0800
+@@ -92,7 +92,7 @@
+         self.sigma_max = sigma_max
+         self.D = D
+         self.N = N
+-        print(f"In VE loss: D:{self.D}, N:{self.N}")
++        #print(f"In VE loss: D:{self.D}, N:{self.N}")
+ 
+     def __call__(self, denosie_fn, data, labels = None, augment_pipe=None, stf=False, pfgmpp=False, ref_data=None):
+         if pfgmpp:
+diff -ruN --strip-trailing-cr -x ckpt -x __pycache__ -x .ipynb_checkpoints -x .DS_Store -x '*.pyc' tabkde_assembled/latent_utils.py ddpm_med/tabkde/latent_utils.py
+--- a/latent_utils.py	2026-10-31 18:33:50.490192200 +0800
++++ b/latent_utils.py	2026-10-03 20:59:00.000000000 +0800
+@@ -3,10 +3,13 @@
+ import numpy as np
+ import pandas as pd
+ import torch
+-from utils_train import preprocess
++from .utils_train import preprocess
+ from tabkde.vae.model import Decoder_model 
+ import joblib
+ 
++from pathlib import Path
++_PROJ = Path(__file__).resolve().parents[1] 
++
+ def load_model(name, path):
+     full_path = os.path.join(path, f"{name}.joblib")
+     return joblib.load(full_path)
+@@ -18,7 +21,8 @@
+     model_path = f'{curr_dir}/{args.latent_encoding}/ckpt/{dataname}/'
+     initial_encoder_model = load_model(name = 'data_aware_model', path = model_path)
+     if not args.copula_encoder:
+-       print('Why args.copula_encoder is False???????')
++       pass
++       #print('Why args.copula_encoder is False???????')
+     copula_model = load_model(name = 'copula_model', path = model_path)
+     synth_data_encoded = copula_model.convert(sample_z)
+ 
+@@ -29,13 +33,16 @@
+ def get_input_train(args):
+     dataname = args.dataname
+     if args.method in ['simple_KDE', 'TabKDE'] and args.latent_encoding != 'copula_encoding':
+-       print(f'Since args.method is {args.method}, args.latent_encoding should be copula_encoding but it is {args.latent_encoding}')
++       #print(f'Since args.method is {args.method}, args.latent_encoding should be copula_encoding but it is {args.latent_encoding}')
+        raise ValueError(f"Ivalid latent_encoding")
+ 
+ 
+     if args.latent_encoding == 'vae':
++        from pathlib import Path
++        root_dir = Path(__file__).parent.parent
+         curr_dir = os.path.dirname(os.path.abspath(__file__))
+-        dataset_dir = f'data/{dataname}'
++        dataset_dir = root_dir/ 'data'/ dataname
++        #dataset_dir = f'../data/{dataname}'
+     
+         with open(f'{dataset_dir}/info.json', 'r') as f:
+             info = json.load(f)
+@@ -53,14 +60,15 @@
+         return train_z, curr_dir, dataset_dir, ckpt_dir, info
+     elif  args.latent_encoding in ['copula_diff_encoding', 'copula_encoding']: 
+         curr_dir = os.path.dirname(os.path.abspath(__file__))
+-        dataset_dir = f'data/{dataname}'
++        #dataset_dir = f'../data/{dataname}'
++        dataset_dir = _PROJ / 'data' / dataname
+     
+         with open(f'{dataset_dir}/info.json', 'r') as f:
+             info = json.load(f)
+     
+         ckpt_dir = f'{curr_dir}/{args.latent_encoding}/ckpt/{dataname}/'
+         embedding_save_path = f'{curr_dir}/{args.latent_encoding}/ckpt/{dataname}/train_z.npy'
+-        print(embedding_save_path)
++        #print(embedding_save_path)
+         train_z = torch.tensor(np.load(embedding_save_path)).float()
+     
+         B, in_dim = train_z.size()
+@@ -70,7 +78,7 @@
+              curr_dir = os.path.dirname(os.path.abspath(__file__))
+              model_path = f'{curr_dir}/{args.latent_encoding}/ckpt/{dataname}/'
+              info['mix_gaussian'] = load_model('gauss_model', model_path)
+-             print('mix_gaussian has been loaded in info[mix_gaussian]')
++             #print('mix_gaussian has been loaded in info[mix_gaussian]')
+         
+         return train_z, curr_dir, dataset_dir, ckpt_dir, info
+ 
+@@ -153,7 +161,7 @@
+         syn_num = syn_num[:, len(target_col_idx):]
+     
+     else:
+-        print('syn_cat.shape =', syn_cat.shape)
++        #print('syn_cat.shape =', syn_cat.shape)
+         syn_target = syn_cat[:, :len(target_col_idx)]
+         syn_cat = syn_cat[:, len(target_col_idx):]
+ 
+diff -ruN --strip-trailing-cr -x ckpt -x __pycache__ -x .ipynb_checkpoints -x .DS_Store -x '*.pyc' tabkde_assembled/main.py ddpm_med/tabkde/main.py
+--- a/main.py	2026-10-31 18:33:50.491191700 +0800
++++ b/main.py	2026-10-03 16:53:30.000000000 +0800
+@@ -1,3 +1,4 @@
++# tabkde\main.py
+ import os
+ import torch
+ 
+@@ -42,10 +43,10 @@
+     num_epochs = args.num_epochs
+ 
+     denoise_fn = MLPDiffusion(in_dim, 1024).to(device)
+-    print(denoise_fn)
++    #print(denoise_fn)
+ 
+     num_params = sum(p.numel() for p in denoise_fn.parameters())
+-    print("the number of parameters", num_params)
++    #print("the number of parameters", num_params)
+ 
+     model = Model(denoise_fn = denoise_fn, hid_dim = train_z.shape[1]).to(device)
+ 
+@@ -90,14 +91,14 @@
+         else:
+             patience += 1
+             if patience == 500:
+-                print('Early stopping')
++                #print('Early stopping')
+                 break
+ 
+         if epoch % 1000 == 0:
+             torch.save(model.state_dict(), f'{ckpt_path}/model_{epoch}.pt')
+ 
+     end_time = time.time()
+-    print('Time: ', end_time - start_time)
++    #print('Time: ', end_time - start_time)
+ 
+ if __name__ == '__main__':
+ 
+diff -ruN --strip-trailing-cr -x ckpt -x __pycache__ -x .ipynb_checkpoints -x .DS_Store -x '*.pyc' tabkde_assembled/process_dataset.py ddpm_med/tabkde/process_dataset.py
+--- a/process_dataset.py	2026-10-31 18:33:50.900320600 +0800
++++ b/process_dataset.py	2026-10-04 11:46:37.000000000 +0800
+@@ -1,3 +1,5 @@
++from pathlib import Path
++
+ import numpy as np
+ import pandas as pd
+ import os
+@@ -13,83 +15,20 @@
+     'int', int
+ }
+ 
+-INFO_PATH = 'data/Info'
+-
+-parser = argparse.ArgumentParser(description='process dataset')
+-
+-# General configs
+-parser.add_argument('--dataname', type=str, default=None, help='Name of dataset.')
+-args = parser.parse_args()
+-
+-def preprocess_beijing():
+-    with open(f'{INFO_PATH}/beijing.json', 'r') as f:
+-        info = json.load(f)
+-    
+-    data_path = info['raw_data_path']
+-
+-    data_df = pd.read_csv(data_path)
+-    columns = data_df.columns
+-
+-    data_df = data_df[columns[1:]]
+-
+-
+-    df_cleaned = data_df.dropna()
+-    df_cleaned.to_csv(info['data_path'], index = False)
+-
+-def preprocess_news():
+-    with open(f'{INFO_PATH}/news.json', 'r') as f:
+-        info = json.load(f)
+-
+-    data_path = info['raw_data_path']
+-    data_df = pd.read_csv(data_path)
+-    data_df = data_df.drop('url', axis=1)
+-
+-    columns = np.array(data_df.columns.tolist())
+-
+-    cat_columns1 = columns[list(range(12,18))]
+-    cat_columns2 = columns[list(range(30,38))]
+-
+-    cat_col1 = data_df[cat_columns1].astype(int).to_numpy().argmax(axis = 1)
+-    cat_col2 = data_df[cat_columns2].astype(int).to_numpy().argmax(axis = 1)
+-
+-    data_df = data_df.drop(cat_columns2, axis=1)
+-    data_df = data_df.drop(cat_columns1, axis=1)
+-
+-    data_df['data_channel'] = cat_col1
+-    data_df['weekday'] = cat_col2
+-    
+-    data_save_path = 'data/news/news.csv'
+-    data_df.to_csv(f'{data_save_path}', index = False)
+-
+-    columns = np.array(data_df.columns.tolist())
+-    num_columns = columns[list(range(45))]
+-    cat_columns = ['data_channel', 'weekday']
+-    target_columns = columns[[45]]
+-
+-    info['num_col_idx'] = list(range(45))
+-    info['cat_col_idx'] = [46, 47]
+-    info['target_col_idx'] = [45]
+-    info['data_path'] = data_save_path
+-    
+-    name = 'news'
+-    with open(f'{INFO_PATH}/{name}.json', 'w') as file:
+-        json.dump(info, file, indent=4)
+-
++#INFO_PATH = '../../data/Info'
++INFO_PATH = str(Path(__file__).resolve().parents[1] / 'data' / 'Info')
+ 
+-def get_column_name_mapping(data_df, num_col_idx, cat_col_idx, target_col_idx, column_names = None):
++def get_column_name_mapping(data_df, num_col_idx, cat_col_idx, column_names = None):
+     
+     if not column_names:
+         column_names = np.array(data_df.columns.tolist())
+     
+-
+     idx_mapping = {}
+-
+     curr_num_idx = 0
+     curr_cat_idx = len(num_col_idx)
+     curr_target_idx = curr_cat_idx + len(cat_col_idx)
+ 
+     for idx in range(len(column_names)):
+-
+         if idx in num_col_idx:
+             idx_mapping[int(idx)] = curr_num_idx
+             curr_num_idx += 1
+@@ -100,117 +39,40 @@
+             idx_mapping[int(idx)] = curr_target_idx
+             curr_target_idx += 1
+ 
+-
+     inverse_idx_mapping = {}
+     for k, v in idx_mapping.items():
+         inverse_idx_mapping[int(v)] = k
+         
+     idx_name_mapping = {}
+-    
+     for i in range(len(column_names)):
+         idx_name_mapping[int(i)] = column_names[i]
+ 
+     return idx_mapping, inverse_idx_mapping, idx_name_mapping
+ 
+ 
+-def train_val_test_split(data_df, cat_columns, num_train = 0, num_test = 0):
+-    total_num = data_df.shape[0]
+-    print(f'size of data_set is {total_num}')
+-    idx = np.arange(total_num)
+-
+-
+-    seed = 1234
+-
+-    while True:
+-        np.random.seed(seed)
+-        np.random.shuffle(idx)
+-
+-        train_idx = idx[:num_train]
+-        test_idx = idx[num_train:]
+-
+-
+-        train_df = data_df.loc[train_idx]
+-        test_df = data_df.loc[test_idx]
+-
+-
++def process_data(name, train_df, test_df):
+ 
+-        flag = 0
+-        for i in cat_columns:
+-            if len(set(train_df[i])) != len(set(data_df[i])):
+-                flag = 1
+-                break
+-
+-        if flag == 0:
+-            break
+-        else:
+-            seed += 1
+-        
+-    return train_df, test_df, seed    
+-
+-
+-def process_data(name):
+-
+-    if name == 'news':
+-        preprocess_news()
+-    elif name == 'beijing':
+-        preprocess_beijing()
++    train_df = train_df.copy()
++    test_df = test_df.copy()
+ 
+     with open(f'{INFO_PATH}/{name}.json', 'r') as f:
+         info = json.load(f)
+ 
+-    data_path = info['data_path']
+-    if info['file_type'] == 'csv':
+-        data_df = pd.read_csv(data_path, header = info['header'])
+-
+-    elif info['file_type'] == 'xls':
+-        data_df = pd.read_excel(data_path, sheet_name='Data', header=1)
+-        data_df = data_df.drop('ID', axis=1)
+-
+-    num_data = data_df.shape[0]
+-
+-    column_names = info['column_names'] if info['column_names'] else data_df.columns.tolist()
++    column_names = info['column_names'] if info['column_names'] else train_df.columns.tolist()
+  
+     num_col_idx = info['num_col_idx']
+     cat_col_idx = info['cat_col_idx']
+     target_col_idx = info['target_col_idx']
+ 
+-    idx_mapping, inverse_idx_mapping, idx_name_mapping = get_column_name_mapping(data_df, num_col_idx, cat_col_idx, target_col_idx, column_names)
++    idx_mapping, inverse_idx_mapping, idx_name_mapping = get_column_name_mapping(train_df, num_col_idx, cat_col_idx, column_names)
+ 
+     num_columns = [column_names[i] for i in num_col_idx]
+     cat_columns = [column_names[i] for i in cat_col_idx]
+-    target_columns = [column_names[i] for i in target_col_idx]
+-
+-    if info['test_path']:
+-
+-        # if testing data is given
+-        test_path = info['test_path']
+-
+-        with open(test_path, 'r') as f:
+-            lines = f.readlines()[1:]
+-            test_save_path = f'data/{name}/test.data'
+-            if not os.path.exists(test_save_path):
+-                with open(test_save_path, 'a') as f1:     
+-                    for line in lines:
+-                        save_line = line.strip('\n').strip('.')
+-                        f1.write(f'{save_line}\n')
+-
+-        test_df = pd.read_csv(test_save_path, header = None)
+-        train_df = data_df
+-
+-    else:  
+-        # Train/ Test Split, 90% Training, 10% Testing (Validation set will be selected from Training set)
+-
+-        num_train = int(num_data*p)
+-        num_test = num_data - num_train
+-
+-        train_df, test_df, seed = train_val_test_split(data_df, cat_columns, num_train, num_test)
++    #target_columns = [column_names[i] for i in target_col_idx]
+     
+-
+     train_df.columns = range(len(train_df.columns))
+     test_df.columns = range(len(test_df.columns))
+ 
+-    print(name, train_df.shape, test_df.shape, data_df.shape)
+-
+     col_info = {}
+     
+     for col_idx in num_col_idx:
+@@ -224,7 +86,7 @@
+         col_info['type'] = 'categorical'
+         col_info['categorizes'] = list(set(train_df[col_idx]))    
+ 
+-    for col_idx in target_col_idx:
++    '''for col_idx in target_col_idx:
+         if info['task_type'] == 'regression':
+             col_info[col_idx] = {}
+             col_info['type'] = 'numerical'
+@@ -233,7 +95,7 @@
+         else:
+             col_info[col_idx] = {}
+             col_info['type'] = 'categorical'
+-            col_info['categorizes'] = list(set(train_df[col_idx]))      
++            col_info['categorizes'] = list(set(train_df[col_idx]))'''    
+ 
+     info['column_info'] = col_info
+ 
+@@ -248,27 +110,25 @@
+         test_df.loc[test_df[col] == '?', col] = np.nan
+     for col in cat_columns:
+         test_df.loc[test_df[col] == '?', col] = 'nan'
+-
+-
+     
+     X_num_train = train_df[num_columns].to_numpy().astype(np.float32)
+     X_cat_train = train_df[cat_columns].to_numpy()
+-    y_train = train_df[target_columns].to_numpy()
+-
++    #y_train = train_df[target_columns].to_numpy()
+ 
+     X_num_test = test_df[num_columns].to_numpy().astype(np.float32)
+     X_cat_test = test_df[cat_columns].to_numpy()
+-    y_test = test_df[target_columns].to_numpy()
++    #y_test = test_df[target_columns].to_numpy()
+ 
+- 
+-    save_dir = f'data/{name}'
++    #save_dir = f'../data/{name}'
++    save_dir = str(Path(__file__).resolve().parents[1] / 'data' / f'{name}')
++    os.makedirs(save_dir, exist_ok=True)
+     np.save(f'{save_dir}/X_num_train.npy', X_num_train)
+     np.save(f'{save_dir}/X_cat_train.npy', X_cat_train)
+-    np.save(f'{save_dir}/y_train.npy', y_train)
++    #np.save(f'{save_dir}/y_train.npy', y_train)
+ 
+     np.save(f'{save_dir}/X_num_test.npy', X_num_test)
+     np.save(f'{save_dir}/X_cat_test.npy', X_cat_test)
+-    np.save(f'{save_dir}/y_test.npy', y_test)
++    #np.save(f'{save_dir}/y_test.npy', y_test)
+ 
+     train_df[num_columns] = train_df[num_columns].astype(np.float32)
+     test_df[num_columns] = test_df[num_columns].astype(np.float32)
+@@ -283,8 +143,8 @@
+     train_df.to_csv(f'synthetic/{name}/real.csv', index = False)
+     test_df.to_csv(f'synthetic/{name}/test.csv', index = False)
+ 
+-    print('Numerical', X_num_train.shape)
+-    print('Categorical', X_cat_train.shape)
++    #print('Numerical', X_num_train.shape)
++    #print('Categorical', X_cat_train.shape)
+ 
+     info['column_names'] = column_names
+     info['train_num'] = train_df.shape[0]
+@@ -298,7 +158,7 @@
+     task_type = info['task_type']
+     num_col_idx = info['num_col_idx']
+     cat_col_idx = info['cat_col_idx']
+-    target_col_idx = info['target_col_idx']
++    #target_col_idx = info['target_col_idx']
+ 
+     for i in num_col_idx:
+         metadata['columns'][i] = {}
+@@ -309,47 +169,32 @@
+         metadata['columns'][i] = {}
+         metadata['columns'][i]['sdtype'] = 'categorical'
+ 
+-
+-    if task_type == 'regression':
+-        
+-        for i in target_col_idx:
+-            metadata['columns'][i] = {}
+-            metadata['columns'][i]['sdtype'] = 'numerical'
+-            metadata['columns'][i]['computer_representation'] = 'Float'
+-
+-    else:
++    '''if task_type == 'binclass':
+         for i in target_col_idx:
+             metadata['columns'][i] = {}
+-            metadata['columns'][i]['sdtype'] = 'categorical'
++            metadata['columns'][i]['sdtype'] = 'categorical'''
+ 
+     info['metadata'] = metadata
+ 
+     with open(f'{save_dir}/info.json', 'w') as file:
+         json.dump(info, file, indent=4)
+ 
+-    print(f'Processing and Saving {name} Successfully!')
+-
+-    print(name)
+-    print('Total', info['train_num'] + info['test_num'])
+-    print('Train', info['train_num'])
+-    print('Test', info['test_num'])
+-    if info['task_type'] == 'regression':
+-        num = len(info['num_col_idx'] + info['target_col_idx'])
+-        cat = len(info['cat_col_idx'])
+-    else:
+-        cat = len(info['cat_col_idx'] + info['target_col_idx'])
+-        num = len(info['num_col_idx'])
+-    print('Num', num)
+-    print('Cat', cat)
++    #print(f'Processing and Saving {name} Successfully!')
++    #print('Total', info['train_num'] + info['test_num'])
++    #print('Train', info['train_num'])
++    #print('Test', info['test_num'])
+ 
+ 
+ if __name__ == "__main__":
++    
++    parser = argparse.ArgumentParser(description='process dataset')
++
++    # General configs
++    parser.add_argument('--dataname', type=str, default=None, help='Name of dataset.')
++    args = parser.parse_args()
+ 
+     if args.dataname:
+         process_data(args.dataname)
+     else:
+         for name in ['adult', 'default', 'shoppers', 'magic', 'beijing', 'news']:    
+-            process_data(name)
+-
+-        
+-
++            process_data(name)
+\ No newline at end of file
+diff -ruN --strip-trailing-cr -x ckpt -x __pycache__ -x .ipynb_checkpoints -x .DS_Store -x '*.pyc' tabkde_assembled/sample.py ddpm_med/tabkde/sample.py
+--- a/sample.py	2026-10-31 18:33:50.502185800 +0800
++++ b/sample.py	2026-10-02 17:39:56.000000000 +0800
+@@ -30,19 +30,19 @@
+     steps = args.steps
+     save_path = args.save_path
+     if  args.method in ['simple_KDE', 'TabKDE']:
+-        cprint(f'Since method is {args.method}, args.latent_encoding has been changed to copula]', bold = True, color = 'red')
++        # is {args.method}, args.latent_encoding has been changed to copula]', bold = True, color = 'red')
+         args.latent_encoding = 'copula_encoding'
+  
+ 
+     if args.latent_encoding == 'vae':
+-        print('latent encoding is based on VAE')
++        #print('latent encoding is based on VAE')
+         train_z, _, _, ckpt_path, info, num_inverse, cat_inverse = get_input_generate(args)
+     elif args.latent_encoding == 'copula_diff_encoding':
+-        print('latent encoding is based on ordinal_encoding')
++        #print('latent encoding is based on ordinal_encoding')
+         train_z, curr_dir, dataset_dir, ckpt_path, info = get_input_train(args)
+     else:
+         if args.latent_encoding != 'copula_encoding':
+-            cprint(f'Warning: latent_encoding should be copula and it is {args.latent_encoding}', bold = True, color = 'red')
++            #cprint(f'Warning: latent_encoding should be copula and it is {args.latent_encoding}', bold = True, color = 'red')
+             raise ValueError(f"Incompatible value for latent_encoding: {args.latent_encoding}.")
+         train_z, curr_dir, dataset_dir, ckpt_path, info = get_input_train(args)
+ 
+@@ -50,20 +50,20 @@
+     if args.method == 'tabsyn':
+         in_dim = train_z.shape[1] 
+         mean = train_z.mean(0)
+-        print(f'ckpt_path is {ckpt_path}')
++        #print(f'ckpt_path is {ckpt_path}')
+ 
+         denoise_fn = MLPDiffusion(in_dim, 1024).to(device)
+         
+         model = Model(denoise_fn = denoise_fn, hid_dim = train_z.shape[1]).to(device)
+     
+         model.load_state_dict(torch.load(f'{ckpt_path}/model.pt'))
+-        cprint(f'Diffusion model for {args.method} has been loaded form {ckpt_path}', color= 'green', bold = True)
++        #cprint(f'Diffusion model for {args.method} has been loaded form {ckpt_path}', color= 'green', bold = True)
+         '''
+             Generating samples    
+         '''
+         start_time = time.time()
+     
+-        num_samples = train_z.shape[0]
++        num_samples = args.num_samples#train_z.shape[0]
+         sample_dim = in_dim
+     
+         x_next = sample(net = model.denoise_fn_D, num_samples = num_samples, dim = sample_dim, device = device)
+@@ -71,7 +71,7 @@
+         syn_data = x_next.float().cpu().numpy()
+ 
+         if args.latent_encoding == 'vae':
+-            print(f'methood is {args.method} with latent_encoding {args.latent_encoding}')
++            #print(f'methood is {args.method} with latent_encoding {args.latent_encoding}')
+             syn_num, syn_cat, syn_target = split_num_cat_target(syn_data, info, num_inverse, cat_inverse, args.device) 
+         
+             syn_df = recover_data(syn_num, syn_cat, syn_target, info)
+@@ -87,23 +87,24 @@
+             os.makedirs(save_dir, exist_ok=True)  # make directory if it doesn't exist
+             save_path = os.path.join(save_dir, "copulaDiff.csv")
+             
+-            print(f'methood is {args.method} with latent_encoding {args.latent_encoding} and save_path is {save_path}')
++            #print(f'methood is {args.method} with latent_encoding {args.latent_encoding} and save_path is {save_path}')
+           
+             syn_df = convert_sample_z_to_df(syn_data, args)
+             syn_df.to_csv(save_path, index = False)
+         
+         end_time = time.time()
+-        print('Time:', end_time - start_time)
++        #print('Time:', end_time - start_time)
+     
+-        print('Saving sampled data to {}'.format(save_path))
++        #print('Saving sampled data to {}'.format(save_path))
++        return syn_df
+     elif  args.method in ['simple_KDE_VAE_encoding','KDE_VAE_encoding']:
+      
+-        print(f'The generation method is {args.method}') 
++        #print(f'The generation method is {args.method}') 
+         
+         save_dir = os.path.join(parent_dir, "synthetic", dataname)
+         os.makedirs(save_dir, exist_ok=True)  # make directory if it doesn't exist
+         save_path = os.path.join(save_dir, f'{args.method}.csv')   
+-        cprint(f'synthetic data will be saved on {save_path}', bold = True)
++        #cprint(f'synthetic data will be saved on {save_path}', bold = True)
+      
+         '''
+             Generating samples    
+@@ -117,7 +118,7 @@
+         model = EmpiricalTransformer(df)
+         df_train_copula = model.fit(method = 'average') 
+ 
+-        print('data has been transformed to Copula setting')
++        #print('data has been transformed to Copula setting')
+ 
+         curr_dir = os.path.dirname(os.path.abspath(__file__))
+         ckpt_dir = f'{curr_dir}/ckpt/{dataname}' 
+@@ -130,10 +131,10 @@
+         else:
+             random_selection_size = None
+             
+-        if random_selection_size: 
+-            cprint('!We are in VAE latent space. So the simention is 4 times bigger!! Hard to compute the siatance',
+-                  color = 'red', bold = True)
+-            cprint(f'As data is {args.dataname}, for KDTree a random subselection of size {random_selection_size} is used.', color = 'green')
++        #if random_selection_size: 
++            #cprint('!We are in VAE latent space. So the simention is 4 times bigger!! Hard to compute the siatance',
++                  #color = 'red', bold = True)
++            #cprint(f'As data is {args.dataname}, for KDTree a random subselection of size {random_selection_size} is used.', color = 'green')
+         
+         
+         gmm_BIC, gmm_AIC , DCP_data = fit_mix_gaussian_to_(df_train_copula, 
+@@ -143,14 +144,15 @@
+                                                            random_selection_size = random_selection_size,
+                                                            down_sampling = 200000 if args.dataname in ['ibm_func', 'news'] else None
+                                                           )
+-        print('mix_gaussian has been fitted to the DCR dist.')
++        #print('mix_gaussian has been fitted to the DCR dist.')
+         n, d = df_train_copula.shape
+ 
+         X = df_train_copula.sample(n=n, random_state=None, replace = True).values
+         
+         X_prime = perturb_vector_with_partial_resampling_with_DCP(X, 
+-                                                                  sigma = sigma, 
+                                                                   model = gmm_BIC, 
++                                                                  num_samples = args.num_samples,
++                                                                  sigma = sigma, 
+                                                                   allowed_outside_boundary = False if args.method =='KDE_VAE_encoding' else True)
+         synth_data = model.convert(X_prime).to_numpy()
+      
+@@ -169,7 +171,9 @@
+         syn_df.to_csv(save_path, index = False)
+         
+         end_time = time.time()
+-        print('Time:', end_time - start_time)
++        #print('Time:', end_time - start_time)
++        
++        return syn_df
+      
+     elif  args.method in ['simple_KDE', 'TabKDE']:
+      
+@@ -179,24 +183,24 @@
+      
+         start_time = time.time()
+ 
+-        save_dir = os.path.join(parent_dir, "synthetic", dataname)
+-        os.makedirs(save_dir, exist_ok=True)  # make directory if it doesn't exist
++        save_dir = args.save_path #os.path.join(parent_dir, "synthetic", dataname)
++        #os.makedirs(save_dir, exist_ok=True)  # make directory if it doesn't exist
+         
+         save_path = os.path.join(save_dir, f"{args.method}.csv")
+ 
+         
+-        print(f'methood is {args.method} with latent_encoding {args.latent_encoding} and save_path is {save_path}')
++        #print(f'methood is {args.method} with latent_encoding {args.latent_encoding} and save_path is {save_path}')
+ 
+         train_z, curr_dir, dataset_dir, ckpt_path, info = get_input_train(args)
+      
+         #------------------------------
+-        print(f'The generation method is {args.method}')
++        #print(f'The generation method is {args.method}')
+         
+-        cprint(f'synthetic data will be saved on {save_path}', bold = True)
++        #cprint(f'synthetic data will be saved on {save_path}', bold = True)
+ 
+         
+         npy_z = train_z.reshape(train_z.shape[0], -1)
+-        print(f'train_z.shape is {npy_z.shape}')
++        #print(f'train_z.shape is {npy_z.shape}')
+         df_train_copula = pd.DataFrame(npy_z)
+         n, _ = df_train_copula.shape
+         X = df_train_copula.sample(n=n, random_state=None, replace = True).values
+@@ -205,6 +209,7 @@
+         gmm_BIC = info['mix_gaussian']
+         sample_z = perturb_vector_with_partial_resampling_with_DCP(X, 
+                                                                   sigma = sigma, 
++                                                                  num_samples = args.num_samples,
+                                                                   model = gmm_BIC, 
+                                                                   allowed_outside_boundary = True if args.method =='simple_KDE' else False)
+ 
+@@ -213,11 +218,12 @@
+         # Ensure the folder exists
+         os.makedirs(os.path.dirname(save_path), exist_ok=True)
+         
+-        synth_data.to_csv(save_path, index=False)
+-        cprint(f'synthetic data has been successfully  saved on {save_path}', bold = True, color = 'red')
++        #synth_data.to_csv(save_path, index=False)
++        #cprint(f'synthetic data has been successfully  saved on {save_path}', bold = True, color = 'red')
+         
+         end_time = time.time()
+-        print('Time:', end_time - start_time)
++        #print('Time:', end_time - start_time)
++        return synth_data
+ 
+ if __name__ == '__main__':
+ 
+diff -ruN --strip-trailing-cr -x ckpt -x __pycache__ -x .ipynb_checkpoints -x .DS_Store -x '*.pyc' tabkde_assembled/tools.py ddpm_med/tabkde/tools.py
+--- a/tools.py	2026-10-31 18:33:50.503185000 +0800
++++ b/tools.py	2026-10-02 17:39:56.000000000 +0800
+@@ -88,13 +88,13 @@
+ 
+ def load_data(dataset, datadir):
+     if dataset == '.DS_Store': 
+-        print(".DS_Store is not valid")
++        #print(".DS_Store is not valid")
+         return 
+     if not os.path.isdir(datadir + "/" + dataset):
+-        print("Warning: there is no diractory:" + datadir + "/" + dataset)
++        #print("Warning: there is no diractory:" + datadir + "/" + dataset)
+         return
+     if not os.path.isfile(datadir + "/" + dataset + "/" + dataset + ".txt"):
+-        print("Warning: there is no file:"+ datadir + "/" + dataset + "/" + dataset + ".txt")
++        #print("Warning: there is no file:"+ datadir + "/" + dataset + "/" + dataset + ".txt")
+         return
+         
+     dic = {}
+@@ -109,9 +109,9 @@
+     if "n_patrons2=" in dic:
+         n_test = int(dic["n_patrons2="])
+     n_tot = n_train_val + n_test
+-    print ("\t Total number of data point:", n_tot, "number of training points:", n_train,
+-           "number of validation points:", n_val, "number of test points:", n_test, 
+-           "\t n_features:", d, "\tn_clases:", c, "\n\n\n")    
++    #print ("\t Total number of data point:", n_tot, "number of training points:", n_train,
++           #"number of validation points:", n_val, "number of test points:", n_test, 
++           #"\t n_features:", d, "\tn_clases:", c, "\n\n\n")    
+     details = [n_train, n_val, n_test, n_tot, d, c]
+     f = open(datadir +'/' + dataset + "/" + dic["fich1="], "r").readlines()[1:]
+     X = np.asarray(list(map(lambda x: list(map(float, x.split()[1:-1])), f)))
+@@ -121,7 +121,7 @@
+     fold = list(map(lambda x: list(map(int, x.split())),
+                     open(datadir + "/" + dataset + "/" + "conxuntos.dat", "r").readlines()))
+     train_fold, val_fold = fold[0], fold[1]
+-    print(f"training and validation sizes: {len(train_fold), len(val_fold)}")
++    #print(f"training and validation sizes: {len(train_fold), len(val_fold)}")
+     
+     fold_ = list(map(lambda x: list(map(int, x.split())),
+                     open(datadir + "/" + dataset + "/" + "conxuntos_kfold.dat", "r").readlines()))
+@@ -284,19 +284,19 @@
+     try:
+         A = np.linalg.cholesky(threshold*np.eye(M.shape[0]) + M)
+         lambda_min, lambda_max, eigens = eigen_report(M, threshold)
+-        cprint(f'min eigenvalie of M: {lambda_min}', color = 'blue', bold = True)
+-        cprint(f'max eigenvalie of M: {lambda_max}', color = 'blue', bold = True)
++        #cprint(f'min eigenvalie of M: {lambda_min}', color = 'blue', bold = True)
++        #cprint(f'max eigenvalie of M: {lambda_max}', color = 'blue', bold = True)
+         r = erank(eigens)
+-        cprint(f'1. effective rank of M: {r}', color = 'blue', bold = True)
++        #cprint(f'1. effective rank of M: {r}', color = 'blue', bold = True)
+         er = erank(eigens, Type = 'entropy')
+-        cprint(f'2. Entropy based effective rank of M: {er}', color = 'blue', bold = True)
++        #cprint(f'2. Entropy based effective rank of M: {er}', color = 'blue', bold = True)
+         return A, threshold, r, er, lambda_min, lambda_max
+     except np.linalg.LinAlgError:
+         text = f"Warning: Matrix M is not positive semi-definite."
+-        cprint(text, color= 'blue', bold = True)
++        #cprint(text, color= 'blue', bold = True)
+         lamba_min = np.min(np.real(np.linalg.eigvals(M)))
+-        cprint(f'Least eigenvalue of M: {lamba_min}', color = 'cyan', bold = True)
+-        cprint(f'M + (-lambda_min + 1e-5)*I is used insted of M')
++        #cprint(f'Least eigenvalue of M: {lamba_min}', color = 'cyan', bold = True)
++        #cprint(f'M + (-lambda_min + 1e-5)*I is used insted of M')
+         return cholesky_decomposition(M, threshold = -lamba_min + 1e-5, rank_report = rank_report) 
+         # raise ValueError("Matrix M is not positive semi-definite.")
+ 
+@@ -455,9 +455,9 @@
+                                                    metadata_file_path = datadir + "/"+ data_name + "/metadata.json")
+     
+     synthesizer = synthesizer(metadata)
+-    print('Start fitting')
++    #print('Start fitting')
+     synthesizer.fit(train)
+-    print('Start to synthesize')
++    #print('Start to synthesize')
+     synthetic_data = synthesizer.sample(num_rows=len(hold_out))
+ 
+     D_real_real = compute_min_distances(hold_out, train)
+@@ -533,7 +533,7 @@
+ def RFM_report_diff_bw (X_train, y_train, X_test, y_test, bw_list, device, mem_gb, diag= False):
+     History = []
+     for bandwidth in bw_list:
+-        cprint(f'Staring RFM training for bandwidth = {bandwidth} \n', color = 'blue', bold = True)
++        #cprint(f'Staring RFM training for bandwidth = {bandwidth} \n', color = 'blue', bold = True)
+         model = LaplaceRFM(bandwidth=bandwidth, device = device, mem_gb = mem_gb, diag = diag)
+         model.fit(
+             (X_train, y_train), 
+@@ -543,7 +543,7 @@
+             classif=True
+         )
+         History.append((model.M.numpy(), bandwidth))
+-        cprint('End of training \n')
++        #cprint('End of training \n')
+     return History
+ 
+ def synth_data_report_diff_bw(X_train, X_held_out, M, bw_list = None, threshold = 0):
+@@ -814,7 +814,8 @@
+                 X.extend([x for x in d_held_out_to_train if x <= percentile_value])
+             else: 
+                 if _ == 0:
+-                    print(f'compute_min_distances with indexing = {indexing}')
++                    pass
++                    #print(f'compute_min_distances with indexing = {indexing}')
+                 d_held_out_to_train = compute_min_distances(held_out, train, k = 1)
+                 X.extend(d_held_out_to_train)
+         
+@@ -828,7 +829,7 @@
+     else:
+         X = X_whole
+      
+-    print(f'Fitting a mixture of Gaussian over X which is of size {len(X)}')
++    #print(f'Fitting a mixture of Gaussian over X which is of size {len(X)}')
+     n_components_range = range(1, max_number_components+1)
+ 
+     # Store BIC scores
+@@ -865,10 +866,10 @@
+     optimal_components_bic = n_components_range[np.argmin(bic_scores)]
+     optimal_components_aic = n_components_range[np.argmin(aic_scores)]
+     
+-    print(f"Optimal number of components according to BIC: {optimal_components_bic}")
+-    print(f"Optimal number of components according to AIC: {optimal_components_aic}")
++    #print(f"Optimal number of components according to BIC: {optimal_components_bic}")
++    #print(f"Optimal number of components according to AIC: {optimal_components_aic}")
+     # print(optimal_components_bic, optimal_components_aic, model_records)
+-    cprint('Respectively corresponding models have been returned', color = 'blue', bold = True)
++    #cprint('Respectively corresponding models have been returned', color = 'blue', bold = True)
+     return model_records[optimal_components_bic-1], model_records[optimal_components_aic-1], X_whole.reshape(-1)
+ 
+ 
+diff -ruN --strip-trailing-cr -x ckpt -x __pycache__ -x .ipynb_checkpoints -x .DS_Store -x '*.pyc' tabkde_assembled/tools_1.py ddpm_med/tabkde/tools_1.py
+--- a/tools_1.py	2026-10-31 18:33:50.504184100 +0800
++++ b/tools_1.py	2026-10-02 17:39:56.000000000 +0800
+@@ -15,10 +15,11 @@
+ from scipy.stats import chi2_contingency
+ import seaborn as sns
+ 
+-from sklearn.metrics import mutual_info_score
++from sklearn.ensemble import AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier
++from sklearn.metrics import accuracy_score, mutual_info_score
+ from sklearn.decomposition import PCA
+ from scipy.stats import ks_2samp, pearsonr
+-from sklearn.preprocessing import StandardScaler
++from sklearn.preprocessing import LabelEncoder, StandardScaler
+ from sklearn.metrics import pairwise_distances
+ from sklearn.preprocessing import KBinsDiscretizer
+ 
+@@ -29,6 +30,8 @@
+ import argparse
+ import sys
+ import os
++
++from sklearn.tree import DecisionTreeClassifier
+ minlength = 100
+ 
+ 
+@@ -354,13 +357,14 @@
+         reset = '\033[0m'
+         if color is None: 
+             colored_text = f"{bold_code}{text}{reset}"
+-            print(colored_text)
++            #print(colored_text)
+         elif color in colors:
+             colored_text = f"{bold_code}{colors[color]}{text}{reset}"
+-            print(colored_text)
++            #print(colored_text)
+         else:
+-            cprint(f"Invalid color '{color}'. Available colors: {', '.join(colors.keys())}, lets use red color instead", color = 'yellow', bold = True)
+-            cprint(text, color = 'red', bold = True)
++            pass
++            #cprint(f"Invalid color '{color}'. Available colors: {', '.join(colors.keys())}, lets use red color instead", color = 'yellow', bold = True)
++            #cprint(text, color = 'red', bold = True)
+ 
+ 
+ 
+@@ -411,7 +415,7 @@
+     # Return the numerical column with the maximum correlation
+     max_corr_column = max(correlation_scores, key=correlation_scores.get)
+     max_corr_value = correlation_scores[max_corr_column]
+-    print(f'for column {cat_column} the most correlated numericl column is {max_corr_column}')
++    #print(f'for column {cat_column} the most correlated numericl column is {max_corr_column}')
+     return max_corr_column, max_corr_value
+ 
+ 
+@@ -423,7 +427,7 @@
+     # Step 0: find the most correlated numerical feature for encoding 
+     if isinstance(v, str) and v == 'max_correlation':
+         max_corr_column, max_corr_value = max_correlation(df, column_name, num_columns, method='eta_squared')
+-        print(f'compute_category_map is done')
++        #print(f'compute_category_map is done')
+         v = np.array(df[max_corr_column])
+      
+     # Step 1: Get unique categories and indices
+@@ -523,6 +527,7 @@
+ 
+ def perturb_vector_with_partial_resampling_with_DCP(X, 
+                                                     model, 
++                                                    num_samples,
+                                                     sigma = 'global', 
+                                                     L_limits=None, 
+                                                     U_limits=None, 
+@@ -542,8 +547,8 @@
+     Returns:
+     - x_prime: np.ndarray of shape (n, d), the perturbed vectors within [0,1]^d.
+     """
+-    cprint(f'Imprortant: given sigma is {sigma}', color = 'red', bold = True)
+-    cprint(f'Imprortant: allowed_outside_boundary is {allowed_outside_boundary}', color = 'blue', bold = True)
++    #cprint(f'Imprortant: given sigma is {sigma}', color = 'red', bold = True)
++    #cprint(f'Imprortant: allowed_outside_boundary is {allowed_outside_boundary}', color = 'blue', bold = True)
+     n,d = X.shape
+     if L_limits is None:
+         L_limits = np.zeros(d)
+@@ -563,8 +568,8 @@
+         
+     synth = []
+     counter = 0
+-    while counter < len(X):
+-        x = X[counter]
++    while counter < num_samples:
++        x = X[counter % n]
+         if isinstance(sigma, str) and sigma == 'local':
+             _, I= tree.query(x, k = l*d)
+             NN = X[I].T
+@@ -941,7 +946,7 @@
+         self.decorrelation = decorrelation
+         self.json_path = json_path
+         self.rank_encoding = rank_encoding
+-        cprint(f'Attention: Rank encoding is {rank_encoding}', color = 'red', bold = True)
++        #cprint(f'Attention: Rank encoding is {rank_encoding}', color = 'red', bold = True)
+         data = {}
+         self.encoding_base_vector = encoding_base_vector
+         self.hierarchical_columns = hierarchical_columns
+@@ -953,9 +958,9 @@
+             with open(self.json_path, 'r') as file:
+                 data = json.load(file)
+             data_name_ = data['name']
+-            cprint(f'The name of data = {data_name_}', color = 'purple', bold = True)
++            #cprint(f'The name of data = {data_name_}', color = 'purple', bold = True)
+             self.original_columns = data["column_names"]
+-            cprint(f'Order of the columns is {self.original_columns}', color = 'purple', bold = True)
++            #cprint(f'Order of the columns is {self.original_columns}', color = 'purple', bold = True)
+             if data_name_ == 'ibm_func':
+                 self.selected_columns = ['User','Zip',  'MCC', 'Card', 'Amount', 'Year', 'Month', 'Day', 'Time',  'Use Chip', 'Is Fraud?']
+                 self.ordinal_columns = ['Year', 'Month', 'Day', 'Time', 'Zip']
+@@ -982,13 +987,13 @@
+ 
+ 
+             
+-            if data["task_type"] != "regression":
++            '''if data["task_type"] != "regression":
+                 self.cat_columns.extend([data["column_names"][idx] for idx in data["target_col_idx"] if data["column_names"][idx] in self.columns])
+             elif data["task_type"] == "regression":
+                 self.num_columns.extend([data["column_names"][idx] for idx in data["target_col_idx"] if data["column_names"][idx] in self.columns])
+             else: 
+                 ttt = data["task_type"]
+-                raise ValueError(f"task_type = {ttt} is unknown")
++                raise ValueError(f"task_type = {ttt} is unknown")'''
+                 
+         else:
+             data_name_ = None
+@@ -1002,7 +1007,7 @@
+             forced_to_cat_columns = ['SpecialDay', 'ProductRelated', 'Informational']
+         elif data_name_ and data_name_ in ['beijing', 'beijing_equal']:
+             forced_to_cat_columns = ['Is', 'Ir', 'Iws']
+-            cprint(f'Data is Default and columns in {forced_to_cat_columns} are forced to be categorical', bold = True, color = 'red')
++            #cprint(f'Data is Default and columns in {forced_to_cat_columns} are forced to be categorical', bold = True, color = 'red')
+         # elif data_name_ and data_name_ in ['default']:
+         #     forced_to_cat_columns = [
+         #                              'BILL_AMT1', 
+@@ -1016,29 +1021,29 @@
+         elif data_name_ and data_name_ in ['ibm_func']:
+            #  selected_columns = ['User','Zip',  'MCC', 'Card', 'Amount', 'Year', 'Month', 'Day', 'Time',  'Use Chip', 
+            # 'Is Fraud?']
+-            cprint('Model trick is activated for IBM!', color = 'green', bold = True)
+-            cprint('If it Needs to be change,', color = 'green', bold = True)
+-            cprint('go to tabsyn.tools_1.py', color = 'blue', bold = True)
++            #cprint('Model trick is activated for IBM!', color = 'green', bold = True)
++            #cprint('If it Needs to be change,', color = 'green', bold = True)
++            #cprint('go to tabsyn.tools_1.py', color = 'blue', bold = True)
+ 
+             # 1
+             self.classifier_models = []
+-            cprint('fitting the classifier helper', bold = True)
++            #cprint('fitting the classifier helper', bold = True)
+             model_zip_state = CustomClassifier(model='random')
+             model_zip_state.fit(df_train, C = ['Zip'], target = 'Merchant State')
+             self.classifier_models.append(model_zip_state) 
+-            cprint('classifier: Zip ---> Merchant State', bold = True)
++            #cprint('classifier: Zip ---> Merchant State', bold = True)
+          
+             # 2         
+             model_zip_city = CustomClassifier(model='random')
+             model_zip_city.fit(df_train, C = ['Zip'], target = 'Merchant City')
+             self.classifier_models.append(model_zip_city) 
+-            cprint('classifier: Zip ---> Merchant City', bold = True)
++            #cprint('classifier: Zip ---> Merchant City', bold = True)
+          
+             # 3
+             model_MCC_name = CustomClassifier(model='random')
+             model_MCC_name.fit(df_train, C = ['MCC'], target = 'Merchant Name')
+             self.classifier_models.append(model_MCC_name) 
+-            cprint('classifier: MCC ---> Merchant Name', bold = True)
++            #cprint('classifier: MCC ---> Merchant Name', bold = True)
+         else: 
+             self.selected_columns = selected_columns 
+ 
+@@ -1050,7 +1055,7 @@
+ 
+             
+         if cat_encoding == 'ours':
+-            print(f'encoding is {cat_encoding}')
++            #print(f'encoding is {cat_encoding}')
+             scaler_1 = StandardScaler()
+             standardized_data = scaler_1.fit_transform(df_train[self.num_columns])
+         
+@@ -1058,11 +1063,11 @@
+                 pca_1 = PCA(n_components=1)  # Keep only the most principal component
+                 self.v = pca_1.fit_transform(standardized_data)
+             elif v == 'Cauchy_sampling':
+-                print('Encoding is based on Cauchy sampling')
++                #print('Encoding is based on Cauchy sampling')
+                 n_samples = standardized_data.shape[0]
+                 self.v = np.random.standard_cauchy(n_samples)
+             elif v == 'max_correlation':
+-                 print('Encoding is based on max_correlation!!')
++                 #print('Encoding is based on max_correlation!!')
+                  self.v = 'max_correlation'
+             else:
+                 self.v = None
+@@ -1145,7 +1150,7 @@
+         
+         df_decoded = num_data.copy()
+         if self.decorrelation:
+-            print('decorrelation is ON')
++            #print('decorrelation is ON')
+             df_decoded[:] = df_decoded @ self.U
+         
+         if self.scaler is not None:
+@@ -1188,18 +1193,19 @@
+                 
+                 df_decoded[col] = df_decoded[col].apply(interpolate_category)
+         if self.classifier_models:
+-            cprint('fit and update by classifier')
++            #cprint('fit and update by classifier')
+             for model in self.classifier_models:
+                 print(df_decoded.columns)
+                 df_decoded = model.fit_and_update_df(df_decoded)
+-        cprint(f'columns of the raw decoded data: {df_decoded.columns}', color = 'purple', bold = True)
++        #cprint(f'columns of the raw decoded data: {df_decoded.columns}', color = 'purple', bold = True)
+         R = df_decoded[self.original_columns] if self.original_columns else df_decoded
+-        cprint(f'Final columns: {R.columns}', color = 'purple', bold = True)
++        #cprint(f'Final columns: {R.columns}', color = 'purple', bold = True)
+         return R
+      
+     def get_columns(self):
+          if self.selected_columns:
+-             print('Attention: selected_columns is active')
++             pass
++             #print('Attention: selected_columns is active')
+          """
+          return columns, cat columns, and num columns 
+          """
+@@ -1227,8 +1233,4 @@
+         # Convert back to DataFrame and extract only the requested subset of columns
+         df_decoded_transformed = pd.DataFrame(df_padded, columns=all_columns)
+     
+-        return df_decoded_transformed[cols]  # Return only the requested columns
+-
+-
+-
+-
++        return df_decoded_transformed[cols]  # Return only the requested columns
+\ No newline at end of file
+diff -ruN --strip-trailing-cr -x ckpt -x __pycache__ -x .ipynb_checkpoints -x .DS_Store -x '*.pyc' tabkde_assembled/utils_train.py ddpm_med/tabkde/utils_train.py
+--- a/utils_train.py	2026-10-31 18:33:50.925657600 +0800
++++ b/utils_train.py	2026-10-02 17:39:56.000000000 +0800
+@@ -1,7 +1,7 @@
+ import numpy as np
+ import os
+ 
+-import src
++from . import src
+ from torch.utils.data import Dataset
+ 
+ 

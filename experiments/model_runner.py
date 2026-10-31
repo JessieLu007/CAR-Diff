@@ -172,6 +172,8 @@ def load_run(save_path: str, denoise_class=None) -> dict:
         "run_bundle.pkl 中没有 denoise_class 记录（旧存档），请显式传入 load_run(save_path, denoise_class=...)"
 
     exp_cfg = bundle["exp_cfg"]
+    if "cat_ar" not in vars(exp_cfg.model): # 旧存档 (w/o AR) 没有该字段
+        exp_cfg.model.cat_ar = False
     diffusion = MedAGDiffusion(
         model_cfg=exp_cfg.model, train_cfg=exp_cfg.training,
         sampling_cfg=exp_cfg.sampling, denoise_class=resolved_denoise_class,

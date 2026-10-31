@@ -31,7 +31,8 @@ class ModelConfig:
     prediction_type: str = 'eps' 
     version: str = "v2" # 新增模型版本 "v1" 或者 "v2"
 
-    share_decoder: bool = True    
+    share_decoder: bool = True
+    cat_ar: bool = True  # True(默认） = Ours: 最终一步用自回归类别头； False=w/o AR（类别列条件独立采样）
 
     # 损失组件
     use_normal_reg: bool = False

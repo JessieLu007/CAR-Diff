@@ -1,4 +1,4 @@
-# core/denoise_model_v2.py  (最终版：数值扩散主干 + 共享表示 + 时间条件的类别分类头)
+# core/denoise_model_v2.py  (数值扩散主干 + 共享表示 + 类别头；cat_ar=True 时类别头为自回归头)
 from __future__ import annotations
 import torch
 import torch.nn as nn
@@ -7,6 +7,8 @@ from core.denoise_utils import (
     timestep_embedding, PeriodicEmbedding, MLPResidualBlock,
     ColumnTypeEmbedding, MultiScaleNumEncoder,
 )
+
+AR_EMB_DIM = 16  # AR 头的类别 embedding 维度（固定，不作为超参）
 
 
 class TabMLPDenoise(nn.Module):
@@ -24,6 +26,7 @@ class TabMLPDenoise(nn.Module):
         few_num_threshold: int = 3,
         n_expand: int = 3,
         share_decoder: bool = True,
+        cat_ar: bool = False,
     ):
         super().__init__()
         self.task          = task
@@ -33,8 +36,9 @@ class TabMLPDenoise(nn.Module):
         self.num_classes   = info['num_classes']          # list[int]
         true_marginals     = info.get('true_marginals', None)
         self.share_decoder = share_decoder
+        self.cat_ar        = bool(cat_ar) and len(self.num_classes) > 0
 
-        # ── cat_loss.py 兼容接口 ─────────────────────────────────────────
+        # ── loss 模块兼容接口 ────────────────────────────────────────────
         self.num_numerical_features = self.num_numerical
         _start = 0
         self.slices_for_classes = []
@@ -43,7 +47,7 @@ class TabMLPDenoise(nn.Module):
             _start += n_c
         self.true_marginals = true_marginals
 
-        # ── 少数值列模式（保持不变）──────────────────────────────────────
+        # ── 少数值列模式 ─────────────────────────────────────────────────
         self.few_num_mode = (
             0 < self.num_numerical <= few_num_threshold and n_expand > 1
         )
@@ -70,7 +74,7 @@ class TabMLPDenoise(nn.Module):
         else:
             self.num_col_encoders = None
 
-        # ── 2. 列类型嵌入（数值 token，保持不动）────────────────────────
+        # ── 2. 列类型嵌入 ────────────────────────────────────────────────
         self.col_type_emb = ColumnTypeEmbedding(dim_hidden)
 
         # ── 3. 数值列间 Transformer ──────────────────────────────────────
@@ -96,7 +100,7 @@ class TabMLPDenoise(nn.Module):
         )
         self.label_emb = nn.Embedding(num_classes_cond + 1, dim_t)
 
-        # ── 6. 共享表示 h_shared（D → D）─────────────────────────────────
+        # ── 6. 共享表示 ──────────────────────────────────────────────────
         self.proj_fuse = nn.Sequential(
             nn.Linear(dim_hidden, dim_hidden), nn.SiLU(), nn.LayerNorm(dim_hidden),
         )
@@ -140,11 +144,14 @@ class TabMLPDenoise(nn.Module):
                     nn.Linear(dim_hidden, dim_hidden), nn.SiLU(),
                     nn.Dropout(dropout), nn.LayerNorm(dim_hidden),
                 )
+            else:
+                self.cat_shared_dec = None
+
+            if self.cat_ar or share_decoder:
                 self.out_cat = nn.ModuleList([
                     nn.Linear(dim_hidden, c) for c in self.num_classes
                 ])
             else:
-                self.cat_shared_dec = None
                 self.out_cat = nn.ModuleList([
                     nn.Sequential(
                         nn.Linear(dim_hidden, dim_hidden), nn.SiLU(),
@@ -154,6 +161,15 @@ class TabMLPDenoise(nn.Module):
         else:
             self.cat_shared_dec = None
             self.out_cat = None
+
+        # ── 9. AR 类别头：共享 GRUCell + 逐列 embedding ──────────────────
+        if self.cat_ar:
+            self.ar_init  = nn.Sequential(nn.Linear(dim_hidden, dim_hidden), nn.SiLU())
+            self.ar_cell  = nn.GRUCell(AR_EMB_DIM, dim_hidden)
+            # 最后一列之后不再更新状态，只需要前 m-1 列的 embedding
+            self.ar_embed = nn.ModuleList([
+                nn.Embedding(c, AR_EMB_DIM) for c in self.num_classes[:-1]
+            ])
 
         if true_marginals is not None and self.out_cat is not None:
             self._apply_prior_initialization(true_marginals)
@@ -168,7 +184,6 @@ class TabMLPDenoise(nn.Module):
                 target.bias.copy_(log_prior)
                 target.weight.data.mul_(0.1)
 
-    # ────────────────────────────────────────────────────────────────────
     def _encode_num_tokens(self, x_num: torch.Tensor) -> list:
         num_tokens = []
         if self.num_col_encoders is None:
@@ -183,13 +198,8 @@ class TabMLPDenoise(nn.Module):
         return num_tokens
 
     # ────────────────────────────────────────────────────────────────────
-    def forward(self, x_num: torch.Tensor, timesteps: torch.Tensor,
-                y: torch.Tensor, decode_cat: bool = True):
-        """
-        x_num     : [B, N_num] 加噪后的数值列（类别列不参与扩散，不作为输入）
-        decode_cat: False 时只返回数值输出 [B, N_num]，采样的非末步使用，省去无用计算
-        返回       : decode_cat=True 时 [B, N_num + ΣK]（数值噪声预测 + 各类别 logits）
-        """
+    def _trunk(self, x_num, timesteps, y, need_cat: bool = True):
+        """返回 (out_n [B,N_num], h_cat [B,D] 或 None)。"""
         B = x_num.shape[0]
         t_emb = self.time_embed(timestep_embedding(timesteps, self.dim_t))
         emb   = t_emb + self.label_emb(y.view(-1).long())
@@ -220,15 +230,53 @@ class TabMLPDenoise(nn.Module):
                 h_num = self.num_shared_dec(h_num)
             out_n = self.out_num(h_num)
 
-        if not decode_cat or self.cat_backbone is None:
+        h_cat = None
+        if need_cat and self.cat_backbone is not None:
+            h_cat = h_shared.clone()
+            for layer in self.cat_backbone:
+                h_cat = layer(h_cat, emb)
+            if self.cat_shared_dec is not None:
+                h_cat = self.cat_shared_dec(h_cat)
+
+        return out_n, h_cat
+
+    def _ar_logits(self, h_cat, cat_tf):
+        """教师强制：第 i 列以真实的前 i-1 列为条件，返回拼接 logits [B, ΣK]。"""
+        assert cat_tf is not None, "cat_ar 训练需要传入真实类别 cat_tf"
+        g, outs = self.ar_init(h_cat), []
+        last = len(self.out_cat) - 1
+        for i, head in enumerate(self.out_cat):
+            outs.append(head(g))
+            if i < last:
+                g = self.ar_cell(self.ar_embed[i](cat_tf[:, i]), g)
+        return torch.cat(outs, dim=-1)
+
+    def forward(self, x_num, timesteps, y, cat_tf=None, decode_cat: bool = True):
+        """
+        x_num     : [B, N_num] 加噪后的数值列（类别列不参与扩散，不作为输入）
+        cat_tf    : [B, n_cat] 真实类别索引，仅 cat_ar 训练时传入
+        decode_cat: False 时只返回数值输出 [B, N_num]（采样非末步使用）
+        返回       : [B, N_num + ΣK]（数值噪声预测 + 各类别 logits）
+        """
+        out_n, h_cat = self._trunk(x_num, timesteps, y, need_cat=decode_cat)
+        if h_cat is None:
             return out_n
-
-        h_cat = h_shared.clone()
-        for layer in self.cat_backbone:
-            h_cat = layer(h_cat, emb)
-        if self.cat_shared_dec is not None:
-            h_cat = self.cat_shared_dec(h_cat)
-        out_c = torch.cat([head(h_cat) for head in self.out_cat], dim=-1)
-
+        if self.cat_ar:
+            out_c = self._ar_logits(h_cat, cat_tf)
+        else:
+            out_c = torch.cat([head(h_cat) for head in self.out_cat], dim=-1)
         return torch.cat([out_n, out_c], dim=-1)
-        
+
+    @torch.no_grad()
+    def sample_final(self, x_num, timesteps, y, temperature: float = 1.0):
+        """cat_ar 的最终一步：返回 (out_n, 类别索引 [B, n_cat])，按数据集列顺序逐列采样。"""
+        out_n, h_cat = self._trunk(x_num, timesteps, y, need_cat=True)
+        g, idx_list = self.ar_init(h_cat), []
+        last = len(self.out_cat) - 1
+        for i, head in enumerate(self.out_cat):
+            probs = torch.softmax(head(g) / temperature, dim=-1)
+            idx = torch.multinomial(probs, 1).squeeze(-1)
+            idx_list.append(idx)
+            if i < last:
+                g = self.ar_cell(self.ar_embed[i](idx), g)
+        return out_n, torch.stack(idx_list, dim=1)

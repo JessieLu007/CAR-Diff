@@ -118,6 +118,8 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
         )
         if self.model_cfg.share_decoder is not True:
             net_kwargs['share_decoder'] = False
+        if getattr(self.model_cfg, 'cat_ar', False):
+            net_kwargs['cat_ar'] = True
         self._denoise_fn = self.denoise_class(**net_kwargs).to(self.device)
 
         self.to(self.device)
@@ -216,8 +218,9 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
             + extract(self.sqrt_one_minus_alphas_cumprod, t, x_num.shape) * noise
         )
 
-        # 类别列不参与扩散：网络只接收加噪后的数值列，类别由分类头预测
-        model_out = self._denoise_fn(x_num_t, t, y_cond)
+        # 类别列不参与扩散；cat_ar 时传入真实类别做教师强制
+        cat_tf = x_cat if (self.model_cfg.cat_ar and len(self.num_classes) > 0) else None
+        model_out = self._denoise_fn(x_num_t, t, y_cond, cat_tf=cat_tf)
 
         loss_num = compute_numerical_loss(self, x_num, x_num_t, model_out, t, noise)
         loss_cat = compute_categorical_loss(self, x_cat, model_out)

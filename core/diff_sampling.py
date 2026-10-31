@@ -37,11 +37,12 @@ def _sample_core_once(
     num_samples : int,
     y_cond      : int,
 ) -> torch.Tensor:
-    print(">>> ENTER sample_core")
     b      = num_samples
     device = model.device
     sampling_cfg = model.sampling_cfg
 
+    n_num           = model.num_numerical_features
+    cat_ar          = bool(getattr(model.model_cfg, 'cat_ar', False)) and len(model.num_classes) > 0
     temperature_num = 1.0
     temperature_cat = sampling_cfg.cat_temperature_cap
     cfg_scale       = sampling_cfg.cfg_scale_fidelity
@@ -54,17 +55,23 @@ def _sample_core_once(
     y_unc = torch.full((b,), model.model_cfg.null_class_idx, device=device, dtype=torch.long)
     y_neg = torch.full((b,), 1 - y_cond,                     device=device, dtype=torch.long)
     use_cfg = (model.train_cfg.task == 'minority_cond')
+    if cat_ar and use_cfg:
+        raise NotImplementedError("cat_ar 暂不支持 minority_cond 的 CFG 采样，请设 cat_ar=False")
 
-    n_num = model.num_numerical_features
     x_num = torch.randn(b, n_num, device=device)
     x_cat = torch.empty(b, 0, device=device)
 
-    # ── 逆扩散主循环：只对数值列扩散，类别只在最后一步由分类头采样 ──
+    # ── 逆扩散主循环：只对数值列扩散，类别只在最后一步解码 ──
     for i in reversed(range(model.model_cfg.num_timesteps)):
         t    = torch.full((b,), i, device=device, dtype=torch.long)
         last = (i == 0)
 
-        if not use_cfg:
+        if cat_ar:
+            if last:
+                model_out, x_cat_idx = model._denoise_fn.sample_final(x_num, t, y_pos, temperature_cat)
+            else:
+                model_out = model._denoise_fn(x_num, t, y_pos, decode_cat=False)
+        elif not use_cfg:
             model_out = model._denoise_fn(x_num, t, y_pos, decode_cat=last)
         else:
             x3 = torch.cat([x_num, x_num, x_num], dim=0)
@@ -98,14 +105,17 @@ def _sample_core_once(
         else:
             x_num = mean
 
-        # 类别：最后一步，各列由分类头 logits 独立采样
+        # 类别：最后一步解码
         if last and len(model.num_classes) > 0:
-            model_cat_out = model_out[:, n_num:]
-            idx_list = [
-                gumbel_sample(model_cat_out[:, ix], temperature_cat)
-                for ix in model.slices_for_classes
-            ]
-            x_cat = torch.stack(idx_list, dim=1).to(x_num.dtype)
+            if cat_ar:
+                x_cat = x_cat_idx.to(x_num.dtype)
+            else:
+                model_cat_out = model_out[:, n_num:]
+                idx_list = [
+                    gumbel_sample(model_cat_out[:, ix], temperature_cat)
+                    for ix in model.slices_for_classes
+                ]
+                x_cat = torch.stack(idx_list, dim=1).to(x_num.dtype)
 
     return torch.cat([x_num, x_cat], dim=1)
 
