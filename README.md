@@ -51,7 +51,7 @@ python scripts/aggregate_main.py
 
 结果与 tag 沿用实验时的命名；汇总出表时将 `ours_h256_t200_3_<主方法 tag>` 记为 Ours，
 `ours_h256_t200_3_<noar tag>` 记为 w/o AR。
-论文中的 legacy / sampled / nointeract 消融使用旧代码，`git checkout backup-cat-switches` 复现。
+论文中的 legacy / sampled / nointeract 消融使用旧代码，`git checkout ablation-cat-switches` 复现, w/o AR对应tag experiments-final。
 若重采样旧版（w/o AR）结果，请使用与其一致的代码版本（tag `experiments-final`）。
 
 ### 3. 不使用五折：quickstart.py
