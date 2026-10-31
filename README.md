@@ -22,6 +22,9 @@
 
 ### 2. 五折复现论文实验
 
+splits/ 和 data/Info/ 由 run_cv 与 make_tabkde_info 生成，需先跑 run_cv，再跑 gen_baselines、prepare_tabsyn_folds。
+划分与补全依赖固定种子（2026）和 sklearn 版本，不同环境下可能与论文有微小差异。
+
 ```bash
 # 训练（Ours：自回归类别头，cat_ar 默认 True）。固定预算 200 epochs，无验证集，取最终权重
 python -m experiments.run_cv --dataset chronic_kidney_disease --fold 0 1 2 3 4 \

@@ -11,6 +11,9 @@
 # 数据 & 输出
 outputs/
 runs/
+splits/
+data/Info/
+data/*_fold[0-9]*/
 
 # Python
 __pycache__/
