@@ -9,7 +9,6 @@ scikit-learn==1.7.2
 scipy==1.17.1
 # shap==0.51.0
 synthcity==0.2.12
-#tsai==1.0.1          # synthcity 内部硬依赖，锁定防止 pip 回退到旧版
 xgboost==2.1.4
 
 
