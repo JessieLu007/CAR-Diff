@@ -23,7 +23,7 @@ BL_NAME = {"smote": "SMOTE", "ctgan": "CTGAN", "tvae": "TVAE", "tabddpm": "TabDD
            "tabkde": "TabKDE", "tabsyn": "TabSyn"}
 OURS = "ours:main" # 选定的主训练tag
 def resolve(k, ds):                      # "WO" = CAR-Diff w/o AR（diabetic 取 ep200）
-    return ("ours:ep200" if ds == "diabetic_data" else "ours:final") if k == "WO" else k
+    return "ours:noar" if k == "WO" else k
 SEP = (None, None)                       # 分组分隔标记
 ROWS_MAIN = [("SMOTE", "smote"), ("TabKDE", "tabkde"), SEP,
              ("CTGAN", "ctgan"), ("TVAE", "tvae"), ("TabDDPM", "tabddpm"), ("TabSyn", "tabsyn"), SEP,
@@ -318,7 +318,7 @@ def ablation_gain_csv(G, metrics=ABL_M, fname="ablation_gain.csv"):
 
 def gain_csv(G, pairs, metrics, fname):
     # pairs: [(组名, 变体key, 参照key)]，key 可含 "WO"，走 resolve/res_stab
-    rows = []
+    rows = []#
     for grp, v, ref in pairs:
         for ds in DS_ORDER:
             for m in metrics:
