@@ -39,15 +39,16 @@ python quickstart.py run --dataset my_dataset --test-size 0.2 --repeats 5
 ```
 
 This splits off 20% of the data as a held-out test set, trains the model, draws 5 synthetic samples,
-and evaluates the first one. If you already have a separate test file, pass `--test my_test.csv`
-instead of `--test-size`.
+and evaluates **all of them**, reporting mean±std per metric (saved to `runs/my_dataset/eval_mean_std.csv`).
+If you already have a separate test file, pass `--test my_test.csv` instead of `--test-size`.
 
 Step by step:
 
 ```bash
 python quickstart.py fit    --dataset my_dataset --test-size 0.2
 python quickstart.py sample --dataset my_dataset --repeats 5
-python quickstart.py eval   --dataset my_dataset --fake runs/my_dataset/synthetic_s1.csv
+python quickstart.py eval   --dataset my_dataset --all                     # all synthetic_s*.csv, mean±std
+python quickstart.py eval   --dataset my_dataset --fake runs/my_dataset/synthetic_s1.csv  # single sample
 ```
 
 Comparison methods (SMOTE / CTGAN / TVAE / TabDDPM):
