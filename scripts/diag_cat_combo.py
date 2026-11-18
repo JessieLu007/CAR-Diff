@@ -1,5 +1,5 @@
 # 放在项目根目录运行：python diag_cat_combo.py
-import numpy as np, pandas as pd
+import numpy as np, pandas as pdcombo_diag
 from evaluation.paths import load_fold, ddpm_fakes, load_meta
 
 ROOT  = '.'
