@@ -13,7 +13,7 @@ from evaluation.utils import _mixed_corr
 
 DDPM_ROOT, INFO_PATH = ".", "data/datasets_info.json"
 TABSYN_ROOT = "../tabsyn-main"                 # ← 按服务器实际位置修改
-OURS_HP = "h256_t200_3_abl_ar"
+OURS_HP = "h256_t200_3"
 OUT = Path("paper_out"); (OUT / "figs").mkdir(parents=True, exist_ok=True); (OUT / "tables").mkdir(exist_ok=True)
 CACHE = OUT / "corr_cache.pkl"
 DS = ["hepatitis", "chronic_kidney_disease", "risk_factors_cervical_cancer", "hcv_egy_data", "framingham", "diabetic_data"]

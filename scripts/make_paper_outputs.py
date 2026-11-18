@@ -21,7 +21,7 @@ DS_NAME = {"hepatitis": "Hepatitis", "chronic_kidney_disease": "CKD", "risk_fact
            "hcv_egy_data": "HCV", "framingham": "Framingham", "diabetic_data": "Diabetic"}
 BL_NAME = {"smote": "SMOTE", "ctgan": "CTGAN", "tvae": "TVAE", "tabddpm": "TabDDPM",
            "tabkde": "TabKDE", "tabsyn": "TabSyn"}
-OURS = "ours:abl_ar"
+OURS = "ours:main" # 选定的主训练tag
 def resolve(k, ds):                      # "WO" = CAR-Diff w/o AR（diabetic 取 ep200）
     return ("ours:ep200" if ds == "diabetic_data" else "ours:final") if k == "WO" else k
 SEP = (None, None)                       # 分组分隔标记
@@ -341,7 +341,7 @@ gain_csv(Gtr, pairs, ABL_M, "all_gains.csv")
 gain_csv(Gtr, [("ar", OURS, "WO")], MAIN, "ar_gain_train.csv")
 gain_csv(Gte, [("ar", OURS, "WO")], MAIN, "ar_gain_test.csv")
 gain_csv(Gte, [("stab", f"ours:ar_{t}", OURS) for t in ["ep100", "ep400"]], ["beta_recall"], "hcv_epochs_test.csv")
-gain_csv(Gtr, [("prior", "ours:abl_ar_noprior", OURS)], MAIN, "prior_gain_train.csv")
+#gain_csv(Gtr, [("prior", "ours:abl_ar_noprior", OURS)], MAIN, "prior_gain_train.csv")
 
 def ar_dcr_csv(G, fname="ar_dcr.csv"):
     rows = []
