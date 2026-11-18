@@ -8,7 +8,7 @@ head conditioned on the diffused numerical representation.
 
 Two options depending on what you need:
 
-**Option A — generation only (fit / sample).** Lightweight, installs in a few minutes.
+**Option A — generation only (fit / sample).** Lightweight.
 
 ```bash
 conda create -n car-diff python=3.11
