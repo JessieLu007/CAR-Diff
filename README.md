@@ -6,16 +6,27 @@ head conditioned on the diffused numerical representation.
 
 ## Environment
 
+Two options depending on what you need:
+
+**Option A — generation only (fit / sample).** Lightweight.
+
 ```bash
-conda create -n car-diff python=3.10
+conda create -n car-diff python=3.11
 conda activate car-diff
-bash install.sh          # auto-detects GPU/CPU; see install.sh for options
+bash install-core.sh          # auto-detects GPU/CPU; see install-core.sh for options
 ```
 
-If you only want to test for training and sampling, prepare a simplier virtual environment use:
-```bash
-bash install-core.sh
+With this environment, `quickstart.py eval` and `quickstart.py baselines` will fail with an
+`ImportError` — they need Option B.
 
+**Option B — generation + evaluation + baselines.** `synthcity` pulls in a large dependency tree
+(transformers, pytorch-lightning, and a few unrelated libraries); a fresh install can take 20–60+
+minutes and download 1–2 GB.
+
+```bash
+conda create -n car-diff python=3.11
+conda activate car-diff
+bash install.sh          # auto-detects GPU/CPU; see install.sh for options
 ```
 
 ## Quick Start
@@ -41,7 +52,7 @@ the training data is used.
 3. Fit, sample and evaluate in one command:
 
 ```bash
-python quickstart.py run --dataset hepatitis --test-size 0.2 --repeats 5
+python quickstart.py run --dataset my_dataset --test-size 0.2 --repeats 5
 ```
 
 This splits off 20% of the data as a held-out test set, trains the model, draws 5 synthetic samples,
@@ -51,10 +62,10 @@ If you already have a separate test file, pass `--test my_test.csv` instead of `
 Step by step:
 
 ```bash
-python quickstart.py fit    --dataset hepatitis --test-size 0.2
-python quickstart.py sample --dataset hepatitis --repeats 5
-python quickstart.py eval   --dataset hepatitis --all                     # all synthetic_s*.csv, mean±std
-python quickstart.py eval   --dataset hepatitis --fake runs/my_dataset/synthetic_s1.csv  # single sample
+python quickstart.py fit    --dataset my_dataset --test-size 0.2
+python quickstart.py sample --dataset my_dataset --repeats 5
+python quickstart.py eval   --dataset my_dataset --all                     # all synthetic_s*.csv, mean±std
+python quickstart.py eval   --dataset my_dataset --fake runs/my_dataset/synthetic_s1.csv  # single sample
 ```
 
 Comparison methods (SMOTE / CTGAN / TVAE / TabDDPM):
