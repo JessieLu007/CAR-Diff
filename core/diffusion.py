@@ -218,9 +218,18 @@ class MedAGDiffusion(DiffusionScheduleMixin, nn.Module):
             + extract(self.sqrt_one_minus_alphas_cumprod, t, x_num.shape) * noise
         )
 
-        # 类别列不参与扩散；cat_ar 时传入真实类别做教师强制
-        cat_tf = x_cat if (self.model_cfg.cat_ar and len(self.num_classes) > 0) else None
-        model_out = self._denoise_fn(x_num_t, t, y_cond, cat_tf=cat_tf)
+        log_x_cat = index_to_log_onehot(x_cat, self.num_classes)
+        log_cumprod_alpha_t = extract(self.log_cumprod_alpha, t, log_x_cat.shape)
+        log_1_min_cumprod_alpha_t = extract(self.log_1_min_cumprod_alpha, t, log_x_cat.shape)
+
+        log_x_cat_t = log_add_exp(
+            log_x_cat + log_cumprod_alpha_t,
+            log_1_min_cumprod_alpha_t - torch.log(self.num_classes_expanded),
+        )
+
+        x_in = torch.cat([x_num_t, log_x_cat_t.exp()], dim=1)   # 类别部分网络不使用
+        cat_tf = x_cat if getattr(self.model_cfg, 'cat_ar', False) else None
+        model_out = self._denoise_fn(x_in, t, y_cond, cat_tf=cat_tf)
 
         loss_num = compute_numerical_loss(self, x_num, x_num_t, model_out, t, noise)
         loss_cat = compute_categorical_loss(self, x_cat, model_out)
