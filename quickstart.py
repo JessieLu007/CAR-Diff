@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import sys
+from sklearn.model_selection import train_test_split
 
 
 def _fix_omp() -> None:
@@ -392,6 +393,8 @@ def main():
         p.add_argument("--model", default="", help='覆盖模型超参，如 "dim_hidden=128,num_layers=2"')
         p.add_argument("--training", default="", help='覆盖训练超参，如 "batch_size=32"')
         p.add_argument("--compile", choices=["auto", "on", "off"], default="auto")
+        p.add_argument("--test-size", type=float, default=None,
+                       help="未提供 --test 时，从训练数据中按该比例自动切出测试集(有 target 则分层)")
 
     def sample_args(p):
         p.add_argument("--num-rows", type=int, default=None, help="默认等于训练集行数")
@@ -414,7 +417,16 @@ def main():
     out = _out(a)
     if a.cmd in ("fit", "run"):
         train, spec = _source(a)
-        fit(train, spec, out, test=a.test, epochs=a.epochs, seed=a.seed,
+        test = a.test
+        if test is None and a.test_size:
+            spec_dict = load_spec(spec)
+            df = _restrict(_as_df(train), spec_dict)
+            tgt = spec_dict["target"]
+            train, test = train_test_split(
+                df, test_size=a.test_size, random_state=a.seed,
+                stratify=df[tgt] if tgt else None,
+            )
+        fit(train, spec, out, test=test, epochs=a.epochs, seed=a.seed,
             model_kv=parse_kv(a.model), train_kv=parse_kv(a.training), compile=_compile_flag(a.compile))
     if a.cmd in ("sample", "run"):
         paths = sample(out, a.num_rows, a.sample_seed, a.repeats)
