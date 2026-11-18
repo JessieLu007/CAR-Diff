@@ -287,7 +287,7 @@ def baselines(train, spec, out_dir, test=None, methods=None, n_samples: int = 5,
 
 
 # ─────────────────────────── 评估 ───────────────────────────
-def evaluate(out_dir, fake_path=None) -> pd.DataFrame:
+def evaluate(out_dir, fake_path=None, verbose: bool = True) -> pd.DataFrame:
     """评估一份合成数据。有测试集时给出 ref=train / test / both / real 四组结果，没有则只有 ref=train。
     结果写入 out_dir/eval_<文件名>.csv（汇总）与 eval_detail_<文件名>.csv（逐列/逐对明细）。"""
     from evaluation import metrics as M
@@ -344,11 +344,36 @@ def evaluate(out_dir, fake_path=None) -> pd.DataFrame:
     if details:
         pd.DataFrame(details).to_csv(out / f"eval_detail_{stem}.csv", index=False)
 
-    show = ["ref"] + [c for c in KEY_METRICS if c in summary.columns]
-    print("\n" + summary[show].round(4).to_string(index=False))
-    print(f"[eval] 已保存到 {out / f'eval_{stem}.csv'}")
+    if verbose:
+        fid_cols = ["ref", "shape_err", "cpt_err_all", "corr_diff_cc", "c2st_auc", 
+                    "alpha_precision", "beta_recall"]
+        priv_cols = ["ref", "dcr_ratio", "dcr_exact", "tstr_pr_auc"]
+        fid = summary[summary["ref"].isin(["train", "test"])]
+        priv = summary[summary["ref"].isin(["both", "real"])]
+
+        if not fid.empty:
+            print("\n[fidelity]")
+            print(fid[[c for c in fid_cols if c in fid.columns]].round(4).to_string(index=False))
+        if not priv.empty:
+            print("\n[privacy / utility]")
+            print(priv[[c for c in priv_cols if c in priv.columns]].round(4).to_string(index=False))
+        print(f"[eval] 已保存到 {out / f'eval_{stem}.csv'}")
     return summary
 
+
+def evaluate_many(out_dir, fake_paths) -> pd.DataFrame:
+    """对多次采样结果逐个评估，再按 ref 汇总 mean/std，写入 eval_mean_std.csv。"""
+    out = Path(out_dir)
+    frames = [evaluate(out, p, verbose=False).assign(sample=Path(p).stem) for p in fake_paths]
+    allsum = pd.concat(frames, ignore_index=True)
+    metric_cols = [c for c in allsum.columns if c not in ("ref", "sample")]
+    agg = allsum.groupby("ref")[metric_cols].agg(["mean", "std"])
+    agg.columns = [f"{m}_{stat}" for m, stat in agg.columns]
+    agg = agg.reset_index()
+    agg.to_csv(out / "eval_mean_std.csv", index=False)
+
+    print(f"[eval] 已保存到 {out / 'eval_mean_std.csv'}")
+    return agg
 
 # ─────────────────────────── 命令行 ───────────────────────────
 def _compile_flag(s: str):
@@ -404,6 +429,7 @@ def main():
     p = sub.add_parser("fit");       src_args(p); fit_args(p)
     p = sub.add_parser("sample");    out_args(p); sample_args(p)
     p = sub.add_parser("eval");      out_args(p); p.add_argument("--fake", default=None)
+    p.add_argument("--all", action="store_true", help="评估 out 目录下全部 synthetic_s*.csv")
     p = sub.add_parser("run");       src_args(p); fit_args(p); sample_args(p)
     p = sub.add_parser("baselines"); src_args(p)
     p.add_argument("--methods", nargs="+", choices=BASELINE_METHODS, default=BASELINE_METHODS)
@@ -431,9 +457,12 @@ def main():
     if a.cmd in ("sample", "run"):
         paths = sample(out, a.num_rows, a.sample_seed, a.repeats)
     if a.cmd == "eval":
-        evaluate(out, a.fake)
+        if a.all:
+            evaluate_many(out, sorted(Path(out).glob("synthetic_s*.csv")))
+        else:
+            evaluate(out, a.fake)
     if a.cmd == "run":
-        evaluate(out, paths[0])        # run 只评估第一份采样；其余请用 eval --fake 指定
+        evaluate_many(out, paths)
     if a.cmd == "baselines":
         train, spec = _source(a) if (a.dataset or a.train) else (None, None)
         baselines(train, spec, out, test=a.test, methods=a.methods, n_samples=a.n_samples,
