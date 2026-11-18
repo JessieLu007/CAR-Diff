@@ -1,4 +1,4 @@
-# core/denoise_model_v2.py  (slim：数值主干 + 共享表示 + 类别输出头；可选 AR 类别头)
+# core/denoise_model.py  (slim：数值主干 + 共享表示 + 类别输出头；可选 AR 类别头)
 from __future__ import annotations
 import torch
 import torch.nn as nn

@@ -15,6 +15,9 @@ splits/*_imputed/
 data/Info/
 data/*_fold[0-9]*/
 
+# vscode file
+.vscode/
+
 # Python
 __pycache__/
 *.py[cod]

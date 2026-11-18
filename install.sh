@@ -1,44 +1,47 @@
 #!/usr/bin/env bash
+# GPU-only setup (matches the paper's training environment).
 # Usage:
-#   bash install.sh            # auto-detect: GPU (cu130) if nvidia-smi is found, else CPU
-#   bash install.sh --cuda cu121   # force a specific CUDA build (see https://pytorch.org for tags)
-#   bash install.sh --cpu          # force CPU-only torch
+#   bash install.sh                 # torch==2.14.1, cu130
+#   bash install.sh --cuda cu121    # a different CUDA build (see https://pytorch.org for tags)
 set -e
 
-TORCH_TARGET="auto"
+export PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+FALLBACK_INDEX_URL="https://pypi.org/simple"
+
+CUDA_TAG="cu130"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --cuda) TORCH_TARGET="$2"; shift 2 ;;
-    --cpu)  TORCH_TARGET="cpu"; shift ;;
+    --cuda) CUDA_TAG="$2"; shift 2 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
 
-if [[ "$TORCH_TARGET" == "auto" ]]; then
-  if command -v nvidia-smi &> /dev/null; then
-    TORCH_TARGET="cu130"
-  else
-    TORCH_TARGET="cpu"
+if ! command -v nvidia-smi &> /dev/null; then
+  echo "未检测到 nvidia-smi：此脚本仅支持 GPU 环境，CPU 验证请用 install-cpu.sh"
+  exit 1
+fi
+
+pip_install() {
+  if ! pip install "$@"; then
+    echo "  镜像安装失败，改用官方 PyPI 源重试: $*"
+    pip install "$@" --index-url "$FALLBACK_INDEX_URL"
   fi
-fi
+}
 
-echo "[1/5] Installing base dependencies..."
-pip install -r requirements.txt
+echo "[1/5] Installing base dependencies (this step can be slow — see README)..."
+pip_install -r requirements.txt
 
-echo "[2/5] Installing torch (${TORCH_TARGET})..."
-if [[ "$TORCH_TARGET" == "cpu" ]]; then
-  pip install torch==2.14.1
-else
-  pip install torch==2.14.1 --index-url "https://download.pytorch.org/whl/${TORCH_TARGET}"
-fi
+echo "[2/5] Installing torch==2.14.1 (${CUDA_TAG})..."
+pip_install torch==2.14.1 --extra-index-url "https://download.pytorch.org/whl/${CUDA_TAG}" \
+  --trusted-host pypi.tuna.tsinghua.edu.cn
 
-echo "[3/5] Pinning setuptools back to 75.8.2 (torch pulls a newer one)..."
-pip install setuptools==75.8.2 --no-deps
+echo "[3/5] Pinning setuptools back to 75.8.2..."
+pip_install setuptools==75.8.2 --no-deps
 
 echo "[4/5] Installing shap without resolving its dependencies..."
-pip install shap==0.51.0 --no-deps
+pip_install shap==0.51.0 --no-deps
 
-echo "[5/5] Installing tsai / fastai (overrides the stale versions synthcity pulls in)..."
-pip install tsai==1.0.1 fastai==2.8.12
+echo "[5/5] Installing tsai / fastai..."
+pip_install tsai==1.0.1 fastai==2.8.12
 
 echo "Done."

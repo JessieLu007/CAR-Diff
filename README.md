@@ -12,6 +12,12 @@ conda activate car-diff
 bash install.sh          # auto-detects GPU/CPU; see install.sh for options
 ```
 
+If you only want to test for training and sampling, prepare a simplier virtual environment use:
+```bash
+bash install-core.sh
+
+```
+
 ## Quick Start
 
 1. Put your data at `data/<name>.csv`.
@@ -35,7 +41,7 @@ the training data is used.
 3. Fit, sample and evaluate in one command:
 
 ```bash
-python quickstart.py run --dataset my_dataset --test-size 0.2 --repeats 5
+python quickstart.py run --dataset hepatitis --test-size 0.2 --repeats 5
 ```
 
 This splits off 20% of the data as a held-out test set, trains the model, draws 5 synthetic samples,
@@ -45,10 +51,10 @@ If you already have a separate test file, pass `--test my_test.csv` instead of `
 Step by step:
 
 ```bash
-python quickstart.py fit    --dataset my_dataset --test-size 0.2
-python quickstart.py sample --dataset my_dataset --repeats 5
-python quickstart.py eval   --dataset my_dataset --all                     # all synthetic_s*.csv, mean±std
-python quickstart.py eval   --dataset my_dataset --fake runs/my_dataset/synthetic_s1.csv  # single sample
+python quickstart.py fit    --dataset hepatitis --test-size 0.2
+python quickstart.py sample --dataset hepatitis --repeats 5
+python quickstart.py eval   --dataset hepatitis --all                     # all synthetic_s*.csv, mean±std
+python quickstart.py eval   --dataset hepatitis --fake runs/my_dataset/synthetic_s1.csv  # single sample
 ```
 
 Comparison methods (SMOTE / CTGAN / TVAE / TabDDPM):
