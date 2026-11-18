@@ -64,15 +64,9 @@ The quick interface supports smote / ctgan / tvae / tabddpm; TabKDE and TabSyn a
 
 ```bash
 # Option A: register the dataset in data/datasets_info.json and use it by name
-# (data/<name>.csv is used as the training set)
-python quickstart.py run --dataset hepatitis --test my_test.csv --repeats 5
-# Option B: custom files; spec.json has the same format as one entry of datasets_info.json
-python quickstart.py run --train train.csv --test test.csv --spec spec.json --out runs/demo
+# No testing set: 20% for testing
+python quickstart.py run --dataset hepatitis --test-size 0.2 --repeats 5
 
-# Or step by step: fit -> sample -> eval
-python quickstart.py fit    --dataset hepatitis --test my_test.csv
-python quickstart.py sample --dataset hepatitis --repeats 5
-python quickstart.py eval   --dataset hepatitis [--fake runs/hepatitis/synthetic_s1.csv]
 
 # Comparison methods (smote ctgan tvae tabddpm; output: runs/<name>/baselines/<method>_s<j>.csv)
 python quickstart.py baselines --dataset hepatitis --methods smote ctgan --n-samples 5
