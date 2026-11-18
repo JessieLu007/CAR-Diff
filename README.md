@@ -6,8 +6,25 @@ head conditioned on the diffused numerical representation.
 
 ## Environment
 
+Two options depending on what you need:
+
+**Option A — generation only (fit / sample).** Lightweight, installs in a few minutes.
+
 ```bash
-conda create -n car-diff python=3.10
+conda create -n car-diff python=3.11
+conda activate car-diff
+bash install-core.sh          # auto-detects GPU/CPU; see install-core.sh for options
+```
+
+With this environment, `quickstart.py eval` and `quickstart.py baselines` will fail with an
+`ImportError` — they need Option B.
+
+**Option B — generation + evaluation + baselines.** `synthcity` pulls in a large dependency tree
+(transformers, pytorch-lightning, and a few unrelated libraries); a fresh install can take 20–60+
+minutes and download 1–2 GB.
+
+```bash
+conda create -n car-diff python=3.11
 conda activate car-diff
 bash install.sh          # auto-detects GPU/CPU; see install.sh for options
 ```
